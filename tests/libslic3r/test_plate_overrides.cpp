@@ -7,6 +7,7 @@
 #include "libslic3r/Config.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/MultiPrinter/PlateOverrides.hpp"
+#include "libslic3r/MultiPrinter/PlatePresetsFile.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/Semver.hpp"
@@ -98,7 +99,39 @@ std::string read_model_settings(const std::string& path)
     return data;
 }
 
+bool archive_has_file(const std::string& path, const char* name)
+{
+    struct Reader {
+        mz_zip_archive zip{};
+        ~Reader() { if (zip.m_pState) close_zip_reader(&zip); }
+    } reader;
+    REQUIRE(open_zip_reader(&reader.zip, path));
+    return mz_zip_reader_locate_file(&reader.zip, name, nullptr, 0) >= 0;
+}
+
 } // namespace
+
+TEST_CASE("The plates' printer settings file survives a 3MF round trip", "[PlateOverrides]")
+{
+    ScopedTemporaryFile file{".3mf"};
+    Project project;
+    const std::string json = R"({"version":1,"plates":[{"plate_index":0,"printer":"Printer B"}]})";
+    project.model.multi_printer_plates = json;
+    project.save(file.string());
+    CHECK(archive_has_file(file.string(), MultiPrinter::PLATE_PRESETS_FILE));
+
+    Loaded loaded;
+    loaded.load(file.string());
+    CHECK(loaded.model.multi_printer_plates == json);
+}
+
+TEST_CASE("A project without plate printers has no plates' printer settings file", "[PlateOverrides]")
+{
+    ScopedTemporaryFile file{".3mf"};
+    Project project;
+    project.save(file.string());
+    CHECK_FALSE(archive_has_file(file.string(), MultiPrinter::PLATE_PRESETS_FILE));
+}
 
 TEST_CASE("Process settings on a plate survive a 3MF round trip", "[PlateOverrides]")
 {

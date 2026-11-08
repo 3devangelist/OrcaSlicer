@@ -227,6 +227,8 @@ set(lisbslic3r_sources
     Format/bbs_3mf.hpp
     MultiPrinter/PlateOverrides.cpp # [multi-printer]
     MultiPrinter/PlateOverrides.hpp # [multi-printer]
+    MultiPrinter/PlatePresetsFile.cpp # [multi-printer]
+    MultiPrinter/PlatePresetsFile.hpp # [multi-printer]
     Format/ProjectStrategy.hpp
     format.hpp
     Format/OBJ.cpp

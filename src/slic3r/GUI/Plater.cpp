@@ -10306,6 +10306,8 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
             if (is_project_file) {
                 q->model().cad_recipe = model.cad_recipe;
                 loaded_cad_recipe     = !model.cad_recipe.empty();
+                q->model().multi_printer_plates = model.multi_printer_plates;             // [multi-printer]
+                MultiPrinterGui::on_project_loaded(*q, model.multi_printer_plates);       // [multi-printer]
             }
 
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ":" << __LINE__ << boost::format(", finished load_model_objects");
@@ -11157,6 +11159,7 @@ void Plater::priv::reset(bool apply_presets_change, bool reload_presets)
     // clear_objects() only drops the ModelObjects; the CAD recipe is Model-level state and would
     // otherwise be written into every project saved for the rest of the session.
     model.cad_recipe.clear();
+    model.multi_printer_plates.clear(); MultiPrinterGui::on_project_reset(); // [multi-printer]
     assemble_view->get_canvas3d()->reset_explosion_ratio();
     update();
 
@@ -20893,6 +20896,7 @@ int Plater::export_3mf(const boost::filesystem::path& output_path, SaveStrategy 
     // modify model
     publish(p->model, strategy);
 
+    MultiPrinterGui::ProjectSaveScope multi_printer_save(*this); // [multi-printer] project's set + plates' sets
     DynamicPrintConfig cfg = wxGetApp().preset_bundle->full_config_secure();
     const std::string path_u8 = into_u8(path);
     wxBusyCursor wait;
