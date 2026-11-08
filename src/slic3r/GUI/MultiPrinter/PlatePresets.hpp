@@ -62,9 +62,19 @@ void on_plate_selected(Plater& plater, PartPlate* plate);
 // True while a set is being swapped in; code reacting to preset changes must not touch other plates then.
 bool is_swapping_presets();
 
-// Adds (or refreshes) the plate menu item that gives the selected plate its own printer, process and
-// filaments, or takes them back. Does nothing when the feature is off.
+// Adds (or refreshes) the plate menu items: give the selected plate its own printer, process and
+// filaments (or take them back), and copy / paste plate settings. Does nothing when the feature is off.
 void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent);
+
+// A new plate takes the settings of the plate it was added from: its plate options and process
+// overrides, and its own preset set if it has one. Called before the new plate is selected.
+void on_plate_added(Plater& plater, PartPlate* source, PartPlate* added);
+
+// Copy / paste everything a plate has: plate options and process overrides, and which printer,
+// process and filaments it uses (its own set, or the project's).
+void copy_plate_settings(Plater& plater, PartPlate* plate);
+bool can_paste_plate_settings();
+void paste_plate_settings(Plater& plater, PartPlate* plate);
 
 // While a project file is written: the PresetBundle holds the project's set (so project_settings.config
 // is what plates without their own set use, and what upstream OrcaSlicer opens), and
