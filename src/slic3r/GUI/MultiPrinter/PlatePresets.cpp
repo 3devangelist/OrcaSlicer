@@ -373,7 +373,20 @@ void on_project_loaded(Plater& plater, const std::string& plates_json)
     });
 }
 
-void on_project_reset() { registry() = Registry{}; }
+void on_project_reset()
+{
+    Registry& r = registry();
+    // A plate's set may be in the bundle: the next project starts from the project's set, not from it.
+    const bool           put_back_project_set = r.active != nullptr && r.has_project_set;
+    const PresetSnapshot project_set          = r.project_set;
+    r = Registry{};
+    Plater* plater = wxGetApp().plater();
+    if (put_back_project_set && plater != nullptr && plate_process_settings_enabled()) {
+        r.swapping = true;
+        load_into_app(*plater, project_set);
+        r.swapping = false;
+    }
+}
 
 bool may_clamp_object_filaments(Plater& plater, const ModelObject* object)
 {
