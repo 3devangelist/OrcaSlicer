@@ -167,20 +167,25 @@ Rules:
    or blocked.
 6. Plates of different sizes.
 
-A smaller first step is possible: **process and filaments per plate on the
-same printer** (covers #8596, #8420, #10551) before printers per plate.
+Agreed order (§5): **process and filaments per plate on the same printer**
+first (covers #8596, #8420, #10551), then printers per plate and plates of
+different sizes.
 
-## 5. Open decisions
+## 5. Decisions (owner, 2026-11-08)
 
-1. ~~What is the "base" for the plate's changed icon?~~ Decided: the
-   global/project level (see the settings hierarchy in §2).
-2. A new plate: copy the selected plate's settings, or start from the base?
-3. An object moved to a plate with a different filament list: pick the
-   closest filament (same type and colour) and warn, or always ask?
-4. Paste plate settings: paste everything, or let the user choose
-   (printer / process / filaments / plate options)?
-5. Order: per-plate process + filaments first, or printers per plate
-   straight away?
+1. **Base for the plate's changed icon:** the global/project level (see the
+   settings hierarchy in §2).
+2. **New plate:** copies the settings of the plate selected when it is
+   created (printer, process, filaments, plate options).
+3. **Object moved to a plate with a different filament list:** OrcaSlicer
+   picks the closest filament on the target plate (same material type first,
+   then the nearest colour) and shows a notification saying what changed,
+   with an undo. It does not ask every time.
+4. **Paste plate settings:** pastes everything (printer, process, filaments,
+   plate options). A later "Paste special…" may let the user pick parts.
+5. **Order:** first **process and filaments per plate on the same printer**
+   (phases 0–4 without the printer swap), then **printers per plate** and
+   plates of different sizes on top of it.
 
 ## 6. Alternatives considered
 

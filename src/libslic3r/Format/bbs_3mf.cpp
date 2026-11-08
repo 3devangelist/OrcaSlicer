@@ -116,6 +116,7 @@ namespace pt = boost::property_tree;
 
 #include <fast_float/fast_float.h>
 #include "libslic3r/ProjectTask.hpp"
+#include "libslic3r/MultiPrinter/PlateOverrides.hpp" // [multi-printer]
 
 // Slightly faster than sprintf("%.9g"), but there is an issue with the karma floating point formatter,
 // https://github.com/boostorg/spirit/pull/586
@@ -4745,6 +4746,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             {
                 m_curr_plater->pattern_bbox_file = value;
             }
+            else if (m_curr_plater && MultiPrinter::read_plate_override(m_curr_plater->config, key, value)) {} // [multi-printer] per-plate process settings
             else if (key == INSTANCEID_ATTR)
             {
                 m_curr_instance.instance_id = atoi(value.c_str());
@@ -8548,6 +8550,8 @@ bool _BBS_3MF_Exporter::_add_model_config_file_to_archive(mz_zip_archive& archiv
                     }
                     stream << "\"/>\n";
                 }
+
+                MultiPrinter::write_plate_overrides(stream, plate_data->config, "    "); // [multi-printer] per-plate process settings
 
                 if (save_gcode)
                     stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << GCODE_FILE_ATTR << "\" " << VALUE_ATTR << "=\"" << std::boolalpha << xml_escape(plate_data->gcode_file) << "\"/>\n";
