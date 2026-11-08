@@ -313,6 +313,7 @@
 #include "DeviceCore/DevConfigUtil.h"
 #include "DeviceCore/DevDefs.h"
 #include "BBLTopbar.hpp"
+#include "MultiPrinter/PlatePresets.hpp" // [multi-printer]
 
 namespace fs = boost::filesystem;
 using namespace nlohmann;
@@ -21851,6 +21852,7 @@ void Plater::on_filament_count_change(size_t num_filaments)
     }
 
     for (ModelObject* mo : wxGetApp().model().objects) {
+        if (!MultiPrinterGui::may_clamp_object_filaments(*this, mo)) continue; // [multi-printer] other plate's filaments
         for (ModelVolume* mv : mo->volumes) {
             mv->update_extruder_count(num_filaments);
         }
@@ -21878,6 +21880,7 @@ void Plater::on_filaments_delete(size_t num_filaments, size_t filament_id, int r
         ? wxGetApp().preset_bundle->project_config.option<ConfigOptionBools>("filament_is_mixed")->values
         : is_mixed_before_delete;
     for (ModelObject *mo : wxGetApp().model().objects) {
+        if (!MultiPrinterGui::may_clamp_object_filaments(*this, mo)) continue; // [multi-printer] other plate's filaments
         for (ModelVolume *mv : mo->volumes) {
             mv->update_extruder_count_when_delete_filament(num_filaments, filament_id + 1, replace_filament_id + 1, is_mixed);  // this function is 1 base
         }
@@ -23106,6 +23109,7 @@ int Plater::select_plate(int plate_index, bool need_slice)
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: plate %2%, need_slice %3% ")%__LINE__ %plate_index  %need_slice;
     take_snapshot("select partplate!");
     ret = p->partplate_list.select_plate(plate_index);
+    if (!ret) MultiPrinterGui::on_plate_selected(*this, p->partplate_list.get_curr_plate()); // [multi-printer] the plate's presets
     if (!ret) {
         if (is_view3D_shown())
             wxGetApp().plater()->canvas3D()->render();
@@ -23763,6 +23767,7 @@ int Plater::select_plate_by_hover_id(int hover_id, bool right_click, bool isModi
     {
         //select plate
         ret = p->partplate_list.select_plate(plate_index);
+        if (!ret) MultiPrinterGui::on_plate_selected(*this, p->partplate_list.get_curr_plate()); // [multi-printer] the plate's presets
         if (!ret) {
             SimpleEvent event(EVT_GLCANVAS_PLATE_SELECT);
             p->on_plate_selected(event);
