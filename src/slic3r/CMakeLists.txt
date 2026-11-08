@@ -450,6 +450,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/ParamsPanel.hpp
     GUI/PartPlate.cpp
     GUI/PartPlate.hpp
+    GUI/MultiPrinter/PlateSettings.cpp # [multi-printer]
+    GUI/MultiPrinter/PlateSettings.hpp # [multi-printer]
     GUI/BeltPurgeTower.cpp
     GUI/BeltPurgeTower.hpp
     GUI/FilamentGroupPopup.hpp

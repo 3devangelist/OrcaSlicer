@@ -118,6 +118,7 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GLModel.hpp"
+#include "libslic3r/MultiPrinter/PlateOverrides.hpp" // [multi-printer]
 #include <nlohmann/json.hpp>
 
 class wxFont;
@@ -2668,6 +2669,7 @@ void PartPlate::render_icons(bool bottom, bool only_name, int hover_id)
 
 			if (m_partplate_list->render_plate_settings) {
 				bool has_plate_settings = get_bed_type() != BedType::btDefault || get_print_seq() != PrintSequence::ByDefault || !get_first_layer_print_sequence().empty() || !get_other_layers_print_sequence().empty() || has_spiral_mode_config();
+				has_plate_settings = has_plate_settings || MultiPrinter::has_plate_overrides(m_config); // [multi-printer]
                 if (hover_id == 5) {
                     if (!has_plate_settings)
                         render_icon_texture(m_plate_settings_icon.model, m_partplate_list->m_plate_settings_hovered_texture);
