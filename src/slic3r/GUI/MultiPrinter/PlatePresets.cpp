@@ -334,7 +334,7 @@ ProjectSaveScope::ProjectSaveScope(Plater& plater)
     active_set_storage() = capture_presets(bundle);
     std::map<int, PresetSnapshot> by_index;
     for (const auto& [plate, set] : r.plate_sets)
-        by_index[plate->get_index()] = set;
+        by_index[const_cast<PartPlate*>(plate)->get_index()] = set; // get_index() is not const upstream
     plater.model().multi_printer_plates = sets_to_json(by_index);
     if (r.active != nullptr && r.has_project_set) {
         m_impl             = new Impl;
