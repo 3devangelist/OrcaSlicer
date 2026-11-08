@@ -3802,6 +3802,9 @@ void TabPrintModel::set_model_config(std::map<ObjectBase *, ModelConfig *> const
 {
     m_object_configs = object_configs;
     m_prints.get_selected_preset().config.apply(*m_parent_tab->m_config);
+    if (m_type != Preset::TYPE_PLATE && MultiPrinterGui::plate_process_settings_enabled()) // [multi-printer] object base = global + plate
+        m_prints.get_selected_preset().config.apply_only(*wxGetApp().plate_tab->get_config(),
+            MultiPrinterGui::keys_objects_inherit(plate_keys, *wxGetApp().plate_tab->get_config(), *m_parent_tab->m_config));
     update_model_config();
 }
 
