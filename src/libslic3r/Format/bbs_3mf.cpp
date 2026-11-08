@@ -117,6 +117,7 @@ namespace pt = boost::property_tree;
 #include <fast_float/fast_float.h>
 #include "libslic3r/ProjectTask.hpp"
 #include "libslic3r/MultiPrinter/PlateOverrides.hpp" // [multi-printer]
+#include "libslic3r/MultiPrinter/PlatePresetsFile.hpp" // [multi-printer]
 
 // Slightly faster than sprintf("%.9g"), but there is an issue with the karma floating point formatter,
 // https://github.com/boostorg/spirit/pull/586
@@ -2063,6 +2064,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                         if (mz_zip_reader_extract_to_mem(&archive, stat.m_file_index, buf.data(), buf.size(), 0))
                             model.cad_recipe = std::move(buf);
                     }
+                }
+                else if (boost::algorithm::iequals(name, MultiPrinter::PLATE_PRESETS_FILE)) {
+                    MultiPrinter::read_plate_presets_file(archive, stat, model); // [multi-printer]
                 }
                 else if (boost::algorithm::iequals(name, CUT_INFORMATION_FILE)) {
                     // extract object cut info
@@ -6707,6 +6711,12 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             }
 
             if (!_add_cad_recipe_file_to_archive(archive, model)) {
+                close_zip_writer(&archive);
+                return false;
+            }
+
+            if (!MultiPrinter::add_plate_presets_file(archive, model)) { // [multi-printer]
+                add_error("Unable to add the plates' printer settings to archive");
                 close_zip_writer(&archive);
                 return false;
             }

@@ -14,10 +14,13 @@
 #include "slic3r/GUI/wxExtensions.hpp"
 
 #include <boost/log/trivial.hpp>
+#include <nlohmann/json.hpp>
 #include <wx/menu.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <map>
+#include <memory>
 #include <string>
 
 namespace Slic3r {
@@ -218,6 +221,159 @@ void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent)
         [plate, own](wxCommandEvent&) { set_plate_own_presets(*wxGetApp().plater(), plate, !own); }, "", nullptr,
         []() { return true; }, parent, int(pos));
 }
+
+namespace {
+
+nlohmann::json config_to_json(const DynamicPrintConfig& config)
+{
+    nlohmann::json out = nlohmann::json::object();
+    for (const std::string& key : config.keys())
+        out[key] = config.opt_serialize(key);
+    return out;
+}
+
+DynamicPrintConfig config_from_json(const nlohmann::json& in)
+{
+    DynamicPrintConfig config;
+    if (!in.is_object())
+        return config;
+    ConfigSubstitutionContext substitutions(ForwardCompatibilitySubstitutionRule::EnableSilent);
+    for (auto it = in.begin(); it != in.end(); ++it) {
+        if (!it.value().is_string())
+            continue;
+        try {
+            config.set_deserialize(it.key(), it.value().get<std::string>(), substitutions);
+        } catch (const std::exception&) {
+            // A setting this build does not know or cannot read: keep the preset's value.
+        }
+    }
+    return config;
+}
+
+} // namespace
+
+std::string sets_to_json(const std::map<int, PresetSnapshot>& sets_by_plate_index)
+{
+    nlohmann::json plates = nlohmann::json::array();
+    for (const auto& [index, set] : sets_by_plate_index) {
+        nlohmann::json ams = nlohmann::json::array();
+        for (const auto& counts : set.extruder_ams_counts) {
+            nlohmann::json entry = nlohmann::json::object();
+            for (const auto& [k, v] : counts)
+                entry[std::to_string(k)] = v;
+            ams.push_back(entry);
+        }
+        plates.push_back({{"plate_index", index},
+                          {"printer", set.printers.selected},
+                          {"process", set.prints.selected},
+                          {"filament", set.filaments.selected},
+                          {"filament_presets", set.filament_presets},
+                          {"printer_config", config_to_json(set.printers.edited)},
+                          {"process_config", config_to_json(set.prints.edited)},
+                          {"filament_config", config_to_json(set.filaments.edited)},
+                          {"project_config", config_to_json(set.project_config)},
+                          {"extruder_ams_counts", ams}});
+    }
+    return nlohmann::json{{"version", 1}, {"plates", plates}}.dump(1);
+}
+
+std::map<int, PresetSnapshot> sets_from_json(const std::string& json)
+{
+    std::map<int, PresetSnapshot> sets;
+    const nlohmann::json root = nlohmann::json::parse(json, nullptr, false);
+    if (root.is_discarded() || !root.is_object() || !root.contains("plates") || !root["plates"].is_array())
+        return sets;
+    for (const nlohmann::json& plate : root["plates"]) {
+        if (!plate.is_object() || !plate.contains("plate_index") || !plate["plate_index"].is_number_integer())
+            continue;
+        PresetSnapshot set;
+        set.printers.selected  = plate.value("printer", std::string());
+        set.prints.selected    = plate.value("process", std::string());
+        set.filaments.selected = plate.value("filament", std::string());
+        if (plate.contains("filament_presets") && plate["filament_presets"].is_array())
+            for (const nlohmann::json& name : plate["filament_presets"])
+                if (name.is_string())
+                    set.filament_presets.push_back(name.get<std::string>());
+        set.printers.edited  = config_from_json(plate.value("printer_config", nlohmann::json::object()));
+        set.prints.edited    = config_from_json(plate.value("process_config", nlohmann::json::object()));
+        set.filaments.edited = config_from_json(plate.value("filament_config", nlohmann::json::object()));
+        set.project_config   = config_from_json(plate.value("project_config", nlohmann::json::object()));
+        if (plate.contains("extruder_ams_counts") && plate["extruder_ams_counts"].is_array())
+            for (const nlohmann::json& entry : plate["extruder_ams_counts"]) {
+                std::map<int, int> counts;
+                if (entry.is_object())
+                    for (auto it = entry.begin(); it != entry.end(); ++it)
+                        if (it.value().is_number_integer())
+                            counts[std::atoi(it.key().c_str())] = it.value().get<int>();
+                set.extruder_ams_counts.push_back(counts);
+            }
+        sets[plate["plate_index"].get<int>()] = std::move(set);
+    }
+    return sets;
+}
+
+struct ProjectSaveScope::Impl
+{
+    std::unique_ptr<PresetBundle::SelectionExportBlocker> no_export;
+    const PartPlate*                                      swapped_out = nullptr; // the plate whose set is put back
+};
+
+ProjectSaveScope::ProjectSaveScope(Plater& plater)
+{
+    // Off: leave Model::multi_printer_plates as loaded, so a project's sets survive a save.
+    if (!plate_process_settings_enabled())
+        return;
+    prune(plater);
+    Registry& r = registry();
+    if (r.plate_sets.empty()) {
+        plater.model().multi_printer_plates.clear();
+        return;
+    }
+    PresetBundle& bundle = *wxGetApp().preset_bundle;
+    // The set in the bundle may have unsaved edits made since it was swapped in.
+    active_set_storage() = capture_presets(bundle);
+    std::map<int, PresetSnapshot> by_index;
+    for (const auto& [plate, set] : r.plate_sets)
+        by_index[plate->get_index()] = set;
+    plater.model().multi_printer_plates = sets_to_json(by_index);
+    if (r.active != nullptr && r.has_project_set) {
+        m_impl             = new Impl;
+        m_impl->no_export  = std::make_unique<PresetBundle::SelectionExportBlocker>(bundle);
+        m_impl->swapped_out = r.active;
+        restore_presets(bundle, r.project_set);
+    }
+}
+
+ProjectSaveScope::~ProjectSaveScope()
+{
+    if (m_impl == nullptr)
+        return;
+    Registry& r = registry();
+    if (const auto it = r.plate_sets.find(m_impl->swapped_out); it != r.plate_sets.end())
+        restore_presets(*wxGetApp().preset_bundle, it->second);
+    delete m_impl;
+}
+
+void on_project_loaded(Plater& plater, const std::string& plates_json)
+{
+    on_project_reset();
+    if (!plate_process_settings_enabled() || plates_json.empty())
+        return;
+    Registry& r = registry();
+    PartPlateList& plates = plater.get_partplate_list();
+    for (auto& [index, set] : sets_from_json(plates_json))
+        if (index >= 0 && index < plates.get_plate_count())
+            r.plate_sets[plates.get_plate(index)] = std::move(set);
+    // The bundle holds the project's set now. Swap in the current plate's set once the loading code,
+    // which may still refresh the presets, has finished.
+    wxGetApp().CallAfter([]() {
+        Plater* p = wxGetApp().plater();
+        if (p != nullptr)
+            on_plate_selected(*p, p->get_partplate_list().get_curr_plate());
+    });
+}
+
+void on_project_reset() { registry() = Registry{}; }
 
 bool may_clamp_object_filaments(Plater& plater, const ModelObject* object)
 {

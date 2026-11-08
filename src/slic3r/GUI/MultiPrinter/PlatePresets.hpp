@@ -66,6 +66,33 @@ bool is_swapping_presets();
 // filaments, or takes them back. Does nothing when the feature is off.
 void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent);
 
+// While a project file is written: the PresetBundle holds the project's set (so project_settings.config
+// is what plates without their own set use, and what upstream OrcaSlicer opens), and
+// Model::multi_printer_plates holds the plates' own sets as JSON. The plate's set is back afterwards.
+class ProjectSaveScope
+{
+public:
+    explicit ProjectSaveScope(Plater& plater);
+    ~ProjectSaveScope();
+    ProjectSaveScope(const ProjectSaveScope&)            = delete;
+    ProjectSaveScope& operator=(const ProjectSaveScope&) = delete;
+
+private:
+    struct Impl;
+    Impl* m_impl = nullptr;
+};
+
+// After a project is opened: gives its plates their saved sets (from Model::multi_printer_plates) and,
+// once loading is over, swaps in the current plate's set.
+void on_project_loaded(Plater& plater, const std::string& plates_json);
+
+// A new or cleared project: no plate has its own set any more.
+void on_project_reset();
+
+// The JSON stored in the 3MF, and back. Exposed for tests.
+std::string sets_to_json(const std::map<int, PresetSnapshot>& sets_by_plate_index);
+std::map<int, PresetSnapshot> sets_from_json(const std::string& json);
+
 // Whether the filament clamp after a filament-count change may touch this object: only objects on
 // plates that use the active set, never during a swap.
 bool may_clamp_object_filaments(Plater& plater, const ModelObject* object);
