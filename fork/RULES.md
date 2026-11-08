@@ -101,6 +101,35 @@ piece of it can still go upstream as a PR if they ever want it.
 - Merge upstream **often** (at least at every upstream release). Small merges
   are easier than big ones.
 
+Branches in this fork:
+
+| Branch | Based on | Purpose |
+|---|---|---|
+| `main` | `OrcaSlicer/OrcaSlicer:main` | Clean mirror of upstream. No fork commits. |
+| `multi-printer-plates` (default) | upstream `main` | The feature and the fork docs. All work starts here. |
+| `multi-printer-plates-2.5` | tag `v2.5.0` (stable) | The same fork commits, cherry-picked, so the feature also builds on the current stable release. |
+| `teste/mcp` | `multi-printer-plates` + upstream `feature/mcp` | Test build only: adds upstream's in-progress MCP server so an AI agent can drive the app, read its log and take screenshots while we test. Never base feature work on it. |
+
+Commits marked `[fork-test]` exist only on `teste/mcp`. They are local
+workarounds for upstream code that is still in progress, and are dropped once
+upstream fixes the cause. Current one: `PythonScriptRunner.cpp` in
+`feature/mcp` has an 18,192-byte raw string, above MSVC's 16,380-byte limit for
+one literal (error C2026); it is split into two adjacent literals, which the
+compiler joins, so the embedded Python is unchanged.
+
+### 2.1.1 Building
+- Builds run on the fork owner's own PC (Windows, MSVC, `build_win.bat -ds`),
+  never on cloud machines; GitHub Actions in this fork is the only exception.
+- **One build at a time, limited to 8 jobs** (`build_win.bat -ds -j 8`). Two
+  full builds in parallel froze the PC (Threadripper 1920X, 64 GB).
+- Run a test build with its own data folder, so it never touches the owner's
+  installed OrcaSlicer settings and presets:
+  `orca-slicer.exe --datadir <folder> --mcp`.
+
+### 2.1.2 Upstream
+- We never post issues, comments or PRs to `OrcaSlicer/OrcaSlicer` from this
+  work. The upstream repository is only the base we build on.
+
 ### 2.2 Keep the footprint on upstream files small
 The fewer upstream lines we change, the fewer merge conflicts we get.
 - Put new code in **new files** where possible, in a folder of our own:
