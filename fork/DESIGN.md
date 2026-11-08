@@ -1,6 +1,7 @@
 # Design proposal: per-plate printer, process and filament settings
 
-Status: **proposal, no code yet** (2026-11-08). Branch `multi-printer-plates`.
+Status (2026-11-08): **partly implemented**, see [§0](#0-what-is-implemented).
+Branch `multi-printer-plates`.
 
 > **For developers reading this fork.** The feature idea and the user
 > experience below come from the fork owner, who uses OrcaSlicer daily but is
@@ -13,6 +14,26 @@ Status: **proposal, no code yet** (2026-11-08). Branch `multi-printer-plates`.
 > you can check them and decide differently.
 
 Rules for code in this fork: [RULES.md](RULES.md).
+
+## 0. What is implemented
+
+Everything is behind one preference, **Preferences > Features > "Printer and
+settings per plate"** (key `fork_plate_process_settings`, off by default,
+needs a restart). With it off, OrcaSlicer behaves as upstream.
+
+| Part | Where | Tests |
+|---|---|---|
+| Any process setting can be overridden on a plate (plate tab shows every process page); objects resolve global → plate → object; plate row and 3D plate icon show "changed" | `src/slic3r/GUI/MultiPrinter/PlateSettings.*`, hooks in `Tab.cpp`, `PartPlate.cpp` | MCP: plate layer height 0.12 over global 0.2 slices to 166 layers; object 0.16 on top gives 125 |
+| Plate overrides saved in the 3MF plate block as `plate_override:<key>` | `src/libslic3r/MultiPrinter/PlateOverrides.*`, hooks in `bbs_3mf.cpp` | `tests/libslic3r/test_plate_overrides.cpp` |
+| A plate can own a printer + process + filaments set (plate right-click: "Use own printer, process and filaments"); selecting the plate swaps its set into the PresetBundle, so the sidebar, tabs and slicing use it | `src/slic3r/GUI/MultiPrinter/PlatePresets.*`, hooks in `Plater.cpp` (`select_plate`, `select_plate_by_hover_id`), `GUI_Factories.cpp` | MCP: plate 1 G-code `printer_settings_id = Printer A`, plate 2 `Printer B` |
+| Filament-count changes only clamp objects on plates that use the active set | hooks in `Plater.cpp`, `GUI_ObjectList.cpp` | not tested yet |
+| Plate sets saved in `Metadata/multi_printer_plates.json`; while saving, the bundle holds the project's set so `project_settings.config` stays the project's printer; on open the sets go back to their plates | `src/libslic3r/MultiPrinter/PlatePresetsFile.*`, `Model::multi_printer_plates`, hooks in `bbs_3mf.cpp`, `Plater.cpp` | `test_plate_overrides.cpp` (file round trip); MCP: save with plate 2 on Printer B, reopen, plates keep A / B |
+
+Not done yet: user presets used only by other plates are not embedded in the
+3MF (another computer needs them installed); new plate copies the selected
+plate's set; copy/paste plate settings; plates of different bed sizes; "all
+plates" print/send actions with several printers; undo of set changes.
+Selecting a plate re-slices it after a set swap, even when nothing changed.
 
 ## 1. The problem
 
