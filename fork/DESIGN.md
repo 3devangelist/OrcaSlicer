@@ -29,10 +29,13 @@ needs a restart). With it off, OrcaSlicer behaves as upstream.
 | Filament-count changes only clamp objects on plates that use the active set | hooks in `Plater.cpp`, `GUI_ObjectList.cpp` | not tested yet |
 | Plate sets saved in `Metadata/multi_printer_plates.json`; while saving, the bundle holds the project's set so `project_settings.config` stays the project's printer; on open the sets go back to their plates | `src/libslic3r/MultiPrinter/PlatePresetsFile.*`, `Model::multi_printer_plates`, hooks in `bbs_3mf.cpp`, `Plater.cpp` | `test_plate_overrides.cpp` (file round trip); MCP: save with plate 2 on Printer B, reopen, plates keep A / B |
 
+| New plate ("Add plate") copies the current plate: plate options, process overrides and its own set if any | `on_plate_added` in `PlatePresets.cpp`, hook in `Plater::add_plate` | MCP: plate 1 on Printer B "by object" → new plate is Printer B "by object" |
+| Plate right-click "Copy plate settings" / "Paste plate settings": everything, including back to the project's set | `copy_plate_settings` / `paste_plate_settings` in `PlatePresets.cpp` | MCP: paste plate 1 (B) onto a project-set plate → B; paste a project-set plate onto plate 1 → A |
+
 Not done yet: user presets used only by other plates are not embedded in the
-3MF (another computer needs them installed); new plate copies the selected
-plate's set; copy/paste plate settings; plates of different bed sizes; "all
-plates" print/send actions with several printers; undo of set changes.
+3MF (another computer needs them installed); plates of different bed sizes;
+"all plates" print/send actions with several printers; undo of set changes;
+a test of the filament clamp guard.
 Selecting a plate re-slices it after a set swap, even when nothing changed.
 
 ## 1. The problem
