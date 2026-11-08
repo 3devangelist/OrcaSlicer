@@ -52,6 +52,7 @@
 #include "ParamsPanel.hpp"
 #include "MsgDialog.hpp"
 #include "wx/utils.h"
+#include "MultiPrinter/PlatePresets.hpp" // [multi-printer]
 
 namespace Slic3r
 {
@@ -2352,6 +2353,7 @@ wxMenu* MenuFactory::plate_menu()
     append_menu_item_plate_name(  &m_plate_menu, m_plate_mods_pos);
     append_menu_item_locked(      &m_plate_menu, m_plate_mods_pos + 1);
     append_menu_item_plate_delete(&m_plate_menu, m_plate_mods_pos + 2);
+    MultiPrinterGui::append_plate_presets_menu_item(&m_plate_menu, m_plate_mods_pos + 3, m_parent); // [multi-printer]
     return &m_plate_menu;
 }
 

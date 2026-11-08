@@ -2202,8 +2202,9 @@ void PreferencesDialog::create_items()
     g_sizer->Add(item_multi_machine);
 
     // [multi-printer] fork feature, off by default
-    auto item_plate_process_settings = create_item_checkbox(_L("Process settings per plate"),
-        _L("With this option enabled, a plate's settings can change any process setting for the objects on that plate. "
+    auto item_plate_process_settings = create_item_checkbox(_L("Printer and settings per plate"),
+        _L("With this option enabled, a plate's settings can change any process setting for the objects on that plate, "
+           "and a plate can use its own printer, process and filaments (right-click the plate). "
            "Objects take the global settings first, then their plate's, then their own."),
         MultiPrinterGui::PREFERENCE_KEY, _L("(Requires restart)"));
     g_sizer->Add(item_plate_process_settings);

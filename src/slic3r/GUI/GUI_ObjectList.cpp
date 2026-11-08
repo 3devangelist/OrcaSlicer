@@ -109,6 +109,7 @@
 #include "Gizmos/GLGizmosManager.hpp"
 
 #include "libslic3r/TriangleMeshDeal.hpp"
+#include "MultiPrinter/PlatePresets.hpp" // [multi-printer]
 
 class wxMenu;
 namespace Slic3r { class Step; }
@@ -770,6 +771,7 @@ void ObjectList::update_filament_values_for_items(const size_t filaments_count)
         if (!item) continue;
 
         auto object = (*m_objects)[i];
+        if (!MultiPrinterGui::may_clamp_object_filaments(*wxGetApp().plater(), object)) continue; // [multi-printer] other plate's filaments
         wxString extruder;
         if (!object->config.has("extruder") || size_t(object->config.extruder()) > filaments_count) {
             extruder = "1";
@@ -823,6 +825,7 @@ void ObjectList::update_filament_values_for_items_when_delete_filament(const siz
             continue;
 
         auto     object = (*m_objects)[i];
+        if (!MultiPrinterGui::may_clamp_object_filaments(*wxGetApp().plater(), object)) continue; // [multi-printer] other plate's filaments
         wxString extruder;
         if (!object->config.has("extruder")) {
             extruder = std::to_string(1);
