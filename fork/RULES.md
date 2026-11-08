@@ -5,6 +5,8 @@ This fork adds **multiple plates with different printers in one project**
 the design of PrusaSlicer 3.0 ("Multiple beds with different configs",
 3.0.0-alpha11).
 
+The design proposal is in [DESIGN.md](DESIGN.md).
+
 Upstream will probably not merge this work. So the main goal of these rules is
 to **stay close to upstream OrcaSlicer**, so we can merge each new upstream
 release with little effort.
