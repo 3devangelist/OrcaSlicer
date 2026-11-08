@@ -562,32 +562,35 @@ bool install_local_plugin_package(const boost::filesystem::path& package_file, w
         return false;
     }
 
+    // The message is the package's own error, which says what to fix in it. Each reason arrives framed as a
+    // failed install ("Plugin installation failed: ...") by the code that made it, so none is framed here.
+    const auto failed = [&](const std::string& reason) {
+        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": Plugin package installation failed for " << package_file << " error=" << reason;
+        message = reason.empty() ? _L("Failed to install plugin package. See the log for details.") : from_u8(reason);
+        return false;
+    };
+
     PluginDescriptor plugin_descriptor;
     bool             existing_installation = false;
     std::string      error;
     try {
-        if (!PluginManager::instance().inspect_local_plugin_package(package_file, plugin_descriptor, existing_installation, error)) {
-            BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": Plugin package inspection failed for " << package_file << " error=" << error;
-            message = _L("Failed to install plugin package. See the log for details.");
-            return false;
-        }
+        if (!PluginManager::instance().inspect_local_plugin_package(package_file, plugin_descriptor, existing_installation, error))
+            return failed(error);
     } catch (const std::exception& ex) {
-        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": Plugin package inspection failed for " << package_file << " error=" << ex.what();
-        message = _L("Failed to install plugin package. See the log for details.");
-        return false;
+        return failed(GUI::format(_u8L("Plugin installation failed: %1%"), ex.what()));
     } catch (...) {
-        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": Plugin package inspection failed for " << package_file;
-        message = _L("Failed to install plugin package. See the log for details.");
-        return false;
+        return failed({});
     }
 
     if (existing_installation) {
         const wxString plugin_name = from_u8(plugin_descriptor.name.empty() ? package_file.filename().string() : plugin_descriptor.name);
-        wxMessageDialog dialog(parent,
-                               wxString::Format(_L("Plugin \"%s\" is already installed.\n\nInstalling this package will overwrite the existing plugin."),
-                                                plugin_name),
-                               kOverwritePluginTitle, wxOK | wxCANCEL | wxCANCEL_DEFAULT | wxICON_WARNING);
-        dialog.SetOKCancelLabels(_L("Overwrite"), _L("Cancel"));
+        // Orca's own message dialog rather than a native box, which dialog_respond can't press on every platform.
+        MessageDialog dialog(parent,
+                             wxString::Format(_L("Plugin \"%s\" is already installed.\n\nInstalling this package will overwrite the existing plugin."),
+                                              plugin_name),
+                             kOverwritePluginTitle, wxOK | wxCANCEL | wxICON_WARNING);
+        dialog.SetButtonLabel(wxID_OK, _L("Overwrite"));
+        dialog.SetButtonLabel(wxID_CANCEL, _L("Cancel"), /*set_focus=*/true);
         if (dialog.ShowModal() != wxID_OK) {
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": Plugin package installation cancelled before overwrite. package=" << package_file
                                     << " plugin=" << plugin_descriptor.name;
@@ -613,9 +616,9 @@ bool install_local_plugin_package(const boost::filesystem::path& package_file, w
                 try {
                     ok = PluginManager::instance().install_plugin(package_file, error);
                 } catch (const std::exception& ex) {
-                    error = ex.what();
+                    error = GUI::format(_u8L("Plugin installation failed: %1%"), ex.what());
                 } catch (...) {
-                    error = "Unknown error";
+                    error.clear();
                 }
                 if (ok) {
                     // Reflect the new package in discovery/cloud metadata without blocking the caller.
@@ -633,11 +636,8 @@ bool install_local_plugin_package(const boost::filesystem::path& package_file, w
         error     = std::move(state->error);
     }
 
-    if (!installed) {
-        BOOST_LOG_TRIVIAL(error) << __FUNCTION__ << ": Plugin package installation failed for " << package_file << " error=" << error;
-        message = _L("Failed to install plugin package. See the log for details.");
-        return false;
-    }
+    if (!installed)
+        return failed(error);
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": Plugin package installed successfully from " << package_file;
     const wxString installed_name = from_u8(plugin_descriptor.name.empty() ? package_file.filename().string() : plugin_descriptor.name);
@@ -1272,16 +1272,6 @@ void PluginsDialog::handle_plugin_menu_action(const std::string& plugin_key, con
         if (row_data.is_cloud_plugin())
             reinstall_cloud_plugin(row_data);
     }
-}
-
-void PluginsDialog::restore_z_order()
-{
-    // Deferred so it runs on a clean stack after the modal has fully torn down; the
-    // alive guard covers the dialog being destroyed while the CallAfter is queued.
-    wxGetApp().CallAfter([this, alive = m_alive]() {
-        if (alive->load(std::memory_order_acquire) && IsShown())
-            Raise();
-    });
 }
 
 void PluginsDialog::install_plugin_from_file()

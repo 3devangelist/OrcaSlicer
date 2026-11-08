@@ -255,6 +255,9 @@
 #include "slic3r/GUI/ConfigWizardTypes.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmosManager.hpp"
 #include "slic3r/GUI/HttpServer.hpp"
+#include "slic3r/GUI/Mcp/McpOptions.hpp"
+#include "slic3r/GUI/Mcp/McpService.hpp"
+#include "slic3r/plugin/PluginOperations.hpp"
 #include "slic3r/GUI/ImGuiWrapper.hpp"
 #include "slic3r/GUI/ParamsDialog.hpp"
 #include "slic3r/GUI/ParamsPanel.hpp"
@@ -1232,6 +1235,9 @@ void GUI_App::post_init()
     }
     if (m_startup_cloud_report)
         std::exchange(m_startup_cloud_report, nullptr)();
+
+    if (m_mcp)
+        m_mcp->mark_ready();
 
     BOOST_LOG_TRIVIAL(info) << "finished post_init";
 //BBS: remove the single instance currently
@@ -2849,6 +2855,8 @@ void GUI_App::init_app_config()
     // MainFrame shortcut read the same value; an existing config (true or false) is left untouched.
     if (app_config->get("enable_speed_dial").empty())
         app_config->set_bool("enable_speed_dial", true);
+    if (app_config->get("mcp_port").empty())
+        app_config->set("mcp_port", std::to_string(Mcp::kDefaultPort));
     set_logging_level(Slic3r::level_string_to_boost(app_config->get("log_severity_level")));
 
 }
@@ -2929,6 +2937,7 @@ bool GUI_App::OnInit()
 
 int GUI_App::OnExit()
 {
+    destroy_mcp_service();
     stop_http_server();
     stop_sync_user_preset();
     if (m_startup_cloud_plugin_fetch_thread.joinable())
@@ -2991,6 +3000,9 @@ void GUI_App::CleanUp()
     stop_orca_health_check(m_agent);
     if (m_startup_cloud_plugin_fetch_thread.joinable())
         m_startup_cloud_plugin_fetch_thread.join();
+    // Same reason: the MCP server started before the first startup dialog, so an initialization that
+    // failed after it never reaches OnExit().
+    destroy_mcp_service();
     wxApp::CleanUp();
 }
 
@@ -3049,10 +3061,7 @@ void GUI_App::init_plugin_gui_wiring()
         if (app->is_closing())
             return;
 
-        app->CallAfter([app] {
-            if (!app->is_closing() && app->m_plugins_dlg)
-                app->m_plugins_dlg->update_plugin_dialog_ui();
-        });
+        app->CallAfter([app] { app->update_plugins_dialog(); });
     };
 
     // why: a newly loaded plugin only adds a selectable agent
@@ -3101,6 +3110,24 @@ void GUI_App::init_plugin_gui_wiring()
     };
 
     plugin_mgr.subscribe_on_unload_callback(PluginHostUi::close_windows_for_plugin);
+    Mcp::install_plugin_tool_caller();
+    // A plugin loaded again may make tool calls again.
+    plugin_mgr.subscribe_on_load_callback([](const std::string& plugin_key) {
+        if (wxTheApp != nullptr)
+            wxGetApp().CallAfter([plugin_key] {
+                if (Mcp::McpService* service = wxGetApp().mcp_service(); service != nullptr && service->started())
+                    service->plugin_loaded(plugin_key);
+            });
+    });
+    plugin_mgr.subscribe_on_unload_callback([](const std::string& plugin_key) {
+        PluginOperations::instance().remove_plugin(plugin_key);
+        // What the plugin's tool calls left behind (rules, a recording, a held press) ends with it.
+        if (wxTheApp != nullptr)
+            wxGetApp().CallAfter([plugin_key] {
+                if (Mcp::McpService* service = wxGetApp().mcp_service(); service != nullptr && service->started())
+                    service->end_plugin_scope(plugin_key);
+            });
+    });
     plugin_mgr.subscribe_on_load_callback([refresh_plugins_dialog](const std::string&) { refresh_plugins_dialog(); });
     plugin_mgr.subscribe_on_unload_callback([refresh_plugins_dialog](const std::string&) { refresh_plugins_dialog(); });
     plugin_mgr.subscribe_on_load_callback(NetworkAgentFactory::register_python_plugin);
@@ -3277,6 +3304,7 @@ bool GUI_App::on_init_inner()
     // Stop the Orca Cloud health check as OnExit() does, so no request is in flight while exit() tears down.
     wxGetApp().Bind(wxEVT_END_SESSION, [this](wxCloseEvent &e) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "received wxEVT_END_SESSION";
+        stop_mcp_service();
         stop_sync_user_preset();
         stop_orca_health_check(m_agent);
         // Before the plugin manager and network module go away.
@@ -3341,6 +3369,14 @@ bool GUI_App::on_init_inner()
 //    wxSystemOptions::SetOption("msw.notebook.themed-background", 0);
 
 //     Slic3r::debugf "wxWidgets version %s, Wx version %s\n", wxVERSION_STRING, wxVERSION;
+    // The MCP server starts before the first startup dialog (the TLS prompt below, the setup wizard)
+    // so an agent can see and answer it; tools that need the main window report not-ready until
+    // post_init() has run.
+    if (init_params != nullptr) {
+        const bool serve = init_params->mcp.enable || app_config->get_bool("mcp_enabled");
+        if (serve || !init_params->mcp.script.empty())
+            start_mcp_service(serve);
+    }
     if (is_editor()) {
         std::string msg = Slic3r::Http::tls_global_init();
         std::string ssl_cert_store = app_config->get("tls_accepted_cert_store_location");
@@ -5078,6 +5114,8 @@ void GUI_App::recreate_GUI(const wxString &msg_name)
     update_publish_status();
 
     m_is_recreating_gui = false;
+    if (m_mcp)
+        m_mcp->resume();
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "recreate_GUI exit";
 }
@@ -8466,6 +8504,89 @@ void GUI_App::stop_http_server()
     m_http_server->stop();
 }
 
+bool GUI_App::start_mcp_service(bool serve, std::string* error)
+{
+    // Only the launch options from the command line carry a script; a later start from Preferences
+    // must not run it again.
+    Mcp::McpLaunchOptions options;
+    if (init_params != nullptr && !m_post_initialized)
+        options = init_params->mcp;
+    else if (init_params != nullptr) {
+        options.port  = init_params->mcp.port;
+        options.token = init_params->mcp.token;
+    }
+    if (!m_mcp)
+        m_mcp.reset(new Mcp::McpService());
+    if (serve)
+        m_mcp_wanted = true;
+    std::string err;
+    const bool  ok = m_mcp->start(options, serve, err);
+    if (!ok && serve && m_mcp->port_held_by_other_window()) {
+        // Another window that shares the configuration folder serves agents. Not an error: try the
+        // port every few seconds, so agents keep a server once that window closes.
+        if (!m_mcp_takeover_timer) {
+            m_mcp_takeover_timer = std::make_unique<wxTimer>();
+            m_mcp_takeover_timer->Bind(wxEVT_TIMER, [this](wxTimerEvent&) {
+                if (m_mcp_wanted && m_mcp && !m_mcp->serving() && !is_closing())
+                    start_mcp_service(true);
+                else
+                    m_mcp_takeover_timer->Stop();
+            });
+        }
+        if (!m_mcp_takeover_timer->IsRunning())
+            m_mcp_takeover_timer->Start(3000);
+    } else {
+        if (m_mcp_takeover_timer)
+            m_mcp_takeover_timer->Stop();
+        if (!ok && plater() != nullptr)
+            plater()->get_notification_manager()->push_notification(NotificationType::CustomNotification,
+                                                                    NotificationManager::NotificationLevel::ErrorNotificationLevel,
+                                                                    err);
+    }
+    if (m_post_initialized)
+        m_mcp->mark_ready();
+    if (error != nullptr)
+        *error = err;
+    return ok;
+}
+
+void GUI_App::stop_mcp_endpoint()
+{
+    m_mcp_wanted = false;
+    if (m_mcp_takeover_timer)
+        m_mcp_takeover_timer->Stop();
+    if (m_mcp)
+        m_mcp->stop_serving();
+}
+
+bool GUI_App::restart_mcp_endpoint(std::string* error)
+{
+    if (init_params != nullptr)
+        init_params->mcp.port = 0;
+    if (!m_mcp || !m_mcp->serving())
+        return true;
+    m_mcp->stop_serving();
+    return start_mcp_service(true, error);
+}
+
+void GUI_App::stop_mcp_service()
+{
+    m_mcp_wanted = false;
+    if (m_mcp_takeover_timer)
+        m_mcp_takeover_timer->Stop();
+    if (m_mcp)
+        m_mcp->stop();
+}
+
+void GUI_App::destroy_mcp_service()
+{
+    // Before wxApp::CleanUp(): a timer must not outlive the toolkit.
+    m_mcp_takeover_timer.reset();
+    // Outside any event loop: the deleter waits for running calls, and leaks a service whose calls
+    // never return.
+    m_mcp.reset();
+}
+
 #ifdef __linux__
 static const wxLanguageInfo* linux_get_existing_locale_language(const wxLanguageInfo* language,
                                                                 const wxLanguageInfo* system_language)
@@ -9076,6 +9197,7 @@ void GUI_App::refresh_plugins()
         wxTheApp->CallAfter([error, unknown_error]() {
             if (wxGetApp().is_closing())
                 return;
+            wxGetApp().update_plugins_dialog();
             Plater* plater = wxGetApp().plater();
             if (plater == nullptr)
                 return;
@@ -9093,28 +9215,10 @@ void GUI_App::refresh_plugins()
     }).detach();
 }
 
-void GUI_App::install_local_plugin()
+void GUI_App::update_plugins_dialog()
 {
-    if (mainframe == nullptr)
-        return;
-
-    wxFileDialog dialog(mainframe, _L("Select plugin package"), wxEmptyString, wxEmptyString, _L("Plugin files (*.py;*.whl)|*.py;*.whl"),
-                        wxFD_OPEN | wxFD_FILE_MUST_EXIST);
-    if (dialog.ShowModal() != wxID_OK)
-        return;
-
-    wxString message;
-    const bool ok = install_local_plugin_package(boost::filesystem::path(dialog.GetPath().ToUTF8().data()), mainframe, message);
-    if (message.IsEmpty())
-        return; // user cancelled the overwrite prompt
-
-    Plater* plater = this->plater();
-    if (plater == nullptr)
-        return;
-    plater->get_notification_manager()->push_notification(
-        NotificationType::CustomNotification,
-        ok ? NotificationManager::NotificationLevel::RegularNotificationLevel : NotificationManager::NotificationLevel::ErrorNotificationLevel,
-        into_u8(message));
+    if (!is_closing() && m_plugins_dlg != nullptr)
+        m_plugins_dlg->update_plugin_dialog_ui();
 }
 
 void GUI_App::open_terminal_dialog()
@@ -9357,6 +9461,16 @@ void GUI_App::apply_keeped_preset_modifications()
     load_current_presets(false);
 }
 
+void GUI_App::discard_current_preset_changes()
+{
+    PrinterTechnology printer_technology = preset_bundle->printers.get_edited_preset().printer_technology();
+    for (const Tab* const tab : tabs_list) {
+        if (tab->supports_printer_technology(printer_technology) && tab->current_preset_is_dirty())
+            tab->m_presets->discard_current_changes();
+    }
+    load_current_presets(false);
+}
+
 // This is called when creating new project or load another project
 // OR close ConfigWizard
 // to ask the user what should we do with unsaved changes for presets.
@@ -9374,20 +9488,8 @@ bool GUI_App::check_and_keep_current_preset_changes(const wxString& caption, con
         if (!no_need_change && dlg.ShowModal() == wxID_CANCEL)
             return false;
 
-        auto reset_modifications = [this]() {
-            //if (is_called_from_configwizard)
-            //    return; // no need to discared changes. It will be done fromConfigWizard closing
-
-            PrinterTechnology printer_technology = preset_bundle->printers.get_edited_preset().printer_technology();
-            for (const Tab* const tab : tabs_list) {
-                if (tab->supports_printer_technology(printer_technology) && tab->current_preset_is_dirty())
-                    tab->m_presets->discard_current_changes();
-            }
-            load_current_presets(false);
-        };
-
         if (dlg.discard() || no_need_change)
-            reset_modifications();
+            discard_current_preset_changes();
         else  // save selected changes
         {
             //BBS: add project embedded preset relate logic
@@ -9406,7 +9508,7 @@ bool GUI_App::check_and_keep_current_preset_changes(const wxString& caption, con
                 //    text += "\n\n" + _L("All modifications will be discarded for new project.");
 
                 //MessageDialog(nullptr, text).ShowModal();
-                reset_modifications();
+                discard_current_preset_changes();
             }
             else if (dlg.transfer_changes() && (dlg.has_unselected_options() || is_called_from_configwizard)) {
                 // execute this part of code only if not all modifications are keeping to the new project

@@ -19,6 +19,7 @@
 #include <boost/filesystem/fstream.hpp>
 #include <clocale>
 #include <cstddef>
+#include <deque>
 #include <algorithm>
 #include <ios>
 #include <iomanip>
@@ -43,6 +44,7 @@
 #include "libslic3r/Preset.hpp"
 #include <fstream>
 #include "libslic3r/calib.hpp"
+#include "libslic3r/ParameterUtils.hpp"
 #include <iterator>
 #include "libslic3r/Format/OBJ.hpp"
 #include "libslic3r/Geometry.hpp"
@@ -212,6 +214,7 @@
 #include "3DScene.hpp"
 #include "GLCanvas3D.hpp"
 #include "Selection.hpp"
+#include "SyntheticInput.hpp"
 #include "GLToolbar.hpp"
 #include "GUI_Preview.hpp"
 #include "UVEditorCanvas.hpp"
@@ -1405,21 +1408,6 @@ struct DynamicFilamentList : DynamicList
         DynamicList::update();
     }
 };
-
-// Check if the machine supports Junction Deviation (Marlin firmware with machine_max_junction_deviation > 0)
-static bool has_junction_deviation(const DynamicPrintConfig* printer_config)
-{
-    if (!printer_config) {
-        return false;
-    }
-    const auto gcode_flavor = printer_config->option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor");
-    const auto junction_dev = printer_config->option<ConfigOptionFloats>("machine_max_junction_deviation");
-    return gcode_flavor &&
-           gcode_flavor->value == GCodeFlavor::gcfMarlinFirmware &&
-           junction_dev &&
-           !junction_dev->values.empty() &&
-           junction_dev->values.front() > 0.0;
-}
 
 static DynamicFilamentList dynamic_filament_list;                // every slot, mixed included (per-feature *_filament_id keys)
 static DynamicFilamentList dynamic_physical_filament_list(true); // physical slots only (support_*, wipe_tower_filament)
@@ -4785,7 +4773,7 @@ void Sidebar::update_mixed_filament_list()
                     delete_mixed_filament_at(panel_idx);
                 }, del_item->GetId());
 
-                PopupMenu(&menu);
+                popup_menu(*this, menu);
             });
             combo_and_btn_sizer->Add(menu_btn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(SidebarProps::ElementSpacing()) - FromDIP(2)); // ElementSpacing - 2 (from combo box))
 
@@ -7259,6 +7247,37 @@ struct Plater::priv
     bool m_ignore_event{false};
     bool m_slice_all{false};
     bool m_is_slicing {false};
+
+    // Automation bookkeeping behind Plater::SliceRun / ExportRun.
+    static constexpr std::size_t  kKeepSliceRuns  = 1024; // far more than one Slice All's runs (MAX_PLATE_COUNT)
+    static constexpr std::size_t  kKeepExportRuns = 16;
+    uint64_t                      project_revision {0};
+    uint64_t                      slice_request_seq {0};
+    uint64_t                      slice_run_seq {0};
+    uint64_t                      export_seq {0};
+    uint64_t                      slice_cancel_seq {0};
+    std::deque<Plater::SliceRun>  slice_runs;
+    std::deque<Plater::ExportRun> export_runs;
+    std::deque<uint64_t>          interrupted_slice_requests;
+    // Set while a slice request, or Slice All moving to its next plate, validates and starts its
+    // run: only such a refusal is recorded as a run of that request. Other updates validate too.
+    bool                          in_slice_request {false};
+    // Numbers a new slice request, noting whether the previous one was still slicing.
+    void begin_slice_request();
+    // A background run started; a run still open from before was restarted, so it ends cancelled.
+    void note_run_started();
+    void note_run_rejected(const std::string& error);
+    // A slice request that Plater::reslice() turns away before validating: recorded like a
+    // validation refusal, with the reason, so the request is not taken for a cached result.
+    void note_request_refused(const std::string& reason)
+    {
+        if (in_slice_request)
+            note_run_rejected(reason);
+    }
+    // The message of the latest validation of the current plate, "" when it passed.
+    std::string last_validation_error;
+    // The background process reported completion: closes the open run and any export in flight.
+    void note_process_completed(bool cancelled, bool success, const std::string& error);
     // Missing-plugin set signatures (sorted full refs joined by '\n'), one per notification. They
     // gate plugin-load re-validation and avoid needlessly recreating the notification when the set
     // is unchanged. Whether missing plugins block slicing is derived directly from PluginResolver
@@ -7268,6 +7287,9 @@ struct Plater::priv
     std::string m_inactive_shown_sig;
     std::string m_broken_shown_sig;
     bool auto_reslice_pending {false};
+    // Moves on with every new delayed schedule and when Plater::cancel_slicing() drops a pending
+    // automatic reslice, so a zero-delay reslice queued before either does nothing.
+    uint64_t auto_reslice_generation {0};
     bool auto_reslice_after_cancel {false};
     int m_is_RightClickInLeftUI{-1};
     int m_cur_slice_plate;
@@ -7622,7 +7644,9 @@ struct Plater::priv
             GUI::show_error(this->q, msg);
         }
     }
-    void export_gcode(fs::path output_path, bool output_path_on_removable_media);
+    // `tracked` numbers the export for automation and, when it cannot start right away, unschedules
+    // it instead of leaving it for a later restart. Returns whether it started.
+    bool export_gcode(fs::path output_path, bool output_path_on_removable_media, bool tracked = false);
     void export_gcode(fs::path output_path, bool output_path_on_removable_media, PrintHostJob upload_job);
 
     void reload_from_disk();
@@ -8211,6 +8235,8 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
                 }
             }
             set_plater_dirty(true);
+            // A layer code changes the G-code as a setting does, so an MCP slice running meanwhile is superseded.
+            ++project_revision;
 
             preview->on_tick_changed(tick_event_type);
 
@@ -11101,6 +11127,7 @@ void Plater::priv::delete_all_objects_from_model()
 
 void Plater::priv::reset(bool apply_presets_change, bool reload_presets)
 {
+    ++project_revision;
     // TakeSnapshot below and load_current_presets() further down each re-evaluate the
     // aggregate dirty flag against a baseline that hasn't been reset yet, so they can toggle
     // is_dirty() back and forth several times before it settles; coalesce those into one event.
@@ -11435,6 +11462,7 @@ void Plater::priv::schedule_auto_reslice_if_needed()
     const int delay_seconds = auto_slice_delay_seconds();
     if (delay_seconds > 0) {
         auto_reslice_pending = true;
+        ++auto_reslice_generation;
         auto_reslice_timer.Stop();
         auto_reslice_timer.Start(delay_seconds * 1000, wxTIMER_ONE_SHOT);
         return;
@@ -11445,11 +11473,17 @@ void Plater::priv::schedule_auto_reslice_if_needed()
 
     auto_reslice_pending = true;
     auto_reslice_timer.Stop();
-    wxGetApp().CallAfter([this]() { this->trigger_auto_reslice_now(); });
+    wxGetApp().CallAfter([this, generation = auto_reslice_generation]() {
+        if (generation == this->auto_reslice_generation)
+            this->trigger_auto_reslice_now();
+    });
 }
 
 void Plater::priv::trigger_auto_reslice_now()
 {
+    // Plater::cancel_slicing() dropped it, though its zero-delay call was already queued.
+    if (!this->auto_reslice_pending)
+        return;
     this->auto_reslice_pending = false;
 
     AppConfig* cfg = wxGetApp().app_config;
@@ -11781,6 +11815,7 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
 
         if (err.string.empty())
             err.string = imex_placement_error(partplate_list.get_curr_plate());
+        last_validation_error = err.string;
 
         if (err.string.empty()) {
             this->partplate_list.get_curr_plate()->update_apply_result_invalid(false);
@@ -11853,6 +11888,8 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
         this->main_frame->update_slice_print_status(MainFrame::eEventSliceUpdate, false);
 
         process_completed_with_error = partplate_list.get_curr_plate_index();
+        if (in_slice_request)
+            note_run_rejected(delayed_error_message.empty() ? last_validation_error : delayed_error_message);
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: set to process_completed_with_error, return_state=%2%")%__LINE__%return_state;
     }
     else
@@ -11927,6 +11964,7 @@ bool Plater::priv::restart_background_process(unsigned int state)
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: print is valid, try to start it now")%__LINE__;
         // The print is valid and it can be started.
         if (this->background_process.start()) {
+            note_run_started();
             if (!show_warning_dialog)
                 on_slicing_began();
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: start successfully")%__LINE__;
@@ -11937,6 +11975,7 @@ bool Plater::priv::restart_background_process(unsigned int state)
         PartPlate* cur_plate = background_process.get_current_plate();
         if (cur_plate->is_slice_result_valid() && ((state & UPDATE_BACKGROUND_PROCESS_FORCE_RESTART) != 0)) {
             if (this->background_process.start()) {
+                note_run_started();
                 if (!show_warning_dialog)
                     on_slicing_began();
                 BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: start successfully")%__LINE__;
@@ -11948,17 +11987,17 @@ bool Plater::priv::restart_background_process(unsigned int state)
     return false;
 }
 
-void Plater::priv::export_gcode(fs::path output_path, bool output_path_on_removable_media)
+bool Plater::priv::export_gcode(fs::path output_path, bool output_path_on_removable_media, bool tracked)
 {
-    wxCHECK_RET(!(output_path.empty()), "export_gcode: output_path and upload_job empty");
+    wxCHECK_MSG(!(output_path.empty()), false, "export_gcode: output_path and upload_job empty");
 
     BOOST_LOG_TRIVIAL(trace) << boost::format("export_gcode: output_path %1%")%output_path.string();
     if (model.objects.empty())
-        return;
+        return false;
 
     if (background_process.is_export_scheduled()) {
         GUI::show_error(q, _L("Another export job is running."));
-        return;
+        return false;
     }
 
     // bitmask of UpdateBackgroundProcessReturnState
@@ -11967,7 +12006,7 @@ void Plater::priv::export_gcode(fs::path output_path, bool output_path_on_remova
         view3D->reload_scene(false);
 
     if ((state & priv::UPDATE_BACKGROUND_PROCESS_INVALID) != 0)
-        return;
+        return false;
 
     show_warning_dialog = true;
     if (! output_path.empty()) {
@@ -11979,7 +12018,22 @@ void Plater::priv::export_gcode(fs::path output_path, bool output_path_on_remova
 
     // If the SLA processing of just a single object's supports is running, restart slicing for the whole object.
     this->background_process.set_task(PrintBase::TaskParams());
-    this->restart_background_process(priv::UPDATE_BACKGROUND_PROCESS_FORCE_EXPORT);
+    const bool started = this->restart_background_process(priv::UPDATE_BACKGROUND_PROCESS_FORCE_EXPORT);
+    if (!tracked)
+        return started;
+    if (!started) {
+        // The caller refused to export while the process was running, so reset_export() is effective.
+        background_process.reset_export();
+        notification_manager->close_notification_of_type(NotificationType::ExportOngoing);
+        return false;
+    }
+    Plater::ExportRun run;
+    run.seq  = ++export_seq;
+    run.path = output_path.string();
+    export_runs.push_back(std::move(run));
+    while (export_runs.size() > kKeepExportRuns)
+        export_runs.pop_front();
+    return true;
 }
 void Plater::priv::export_gcode(fs::path output_path, bool output_path_on_removable_media, PrintHostJob upload_job)
 {
@@ -13804,6 +13858,7 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
         }
     }
 
+    note_process_completed(evt.cancelled(), evt.success(), has_error ? lifecycle_error_msg : std::string());
     exporting_status = ExportingStatus::NOT_EXPORTING;
 
 
@@ -13823,6 +13878,8 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
         m_cur_slice_plate++;
 
         q->Freeze();
+        in_slice_request = true;
+        ScopeGuard end_request([this] { in_slice_request = false; });
         q->select_plate(m_cur_slice_plate);
         partplate_list.select_plate_view();
         int ret = q->start_next_slice();
@@ -14033,6 +14090,9 @@ static std::vector<wxString> collect_imex_warnings(PartPlate* plate)
 void Plater::priv::on_action_slice_plate(SimpleEvent&)
 {
     if (q != nullptr) {
+        begin_slice_request();
+        in_slice_request = true;
+        ScopeGuard end_request([this] { in_slice_request = false; });
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received slice plate event\n" ;
         // IMEX parallel mode warnings (current plate only)
         if (wxGetApp().app_config->get("imex_pre_slice_warnings") != "false") {
@@ -14074,6 +14134,9 @@ void Plater::priv::on_action_slice_plate(SimpleEvent&)
 void Plater::priv::on_action_slice_all(SimpleEvent&)
 {
     if (q != nullptr) {
+        begin_slice_request();
+        in_slice_request = true;
+        ScopeGuard end_request([this] { in_slice_request = false; });
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received slice project event\n" ;
         // IMEX parallel mode warnings (all plates)
         if (wxGetApp().app_config->get("imex_pre_slice_warnings") != "false") {
@@ -15585,6 +15648,8 @@ int Plater::priv::get_active_snapshot_index()
 
 void Plater::priv::take_snapshot(const std::string& snapshot_name, const UndoRedo::SnapshotType snapshot_type)
 {
+    // A suppressed snapshot is still an edit.
+    ++project_revision;
     if (m_prevent_snapshots > 0)
         return;
     assert(m_prevent_snapshots >= 0);
@@ -15731,6 +15796,7 @@ bool Plater::priv::up_to_date(bool saved, bool backup)
 
 void Plater::priv::undo_redo_to(std::vector<UndoRedo::Snapshot>::const_iterator it_snapshot)
 {
+    ++project_revision;
     // Make sure that no updating function calls take_snapshot until we are done.
     SuppressSnapshots snapshot_supressor(q);
 
@@ -16567,8 +16633,10 @@ void Plater::load_project(wxString const& filename2,
     update_project_dirty_from_presets();
     wxGetApp().preset_bundle->export_selections(*wxGetApp().app_config);
 
-    // if res is empty no data has been loaded
-    if (!res.empty() && !loaded_published && (load_restore || !(strategy & LoadStrategy::Silence))) {
+    // Nothing was loaded when res is empty, unless the project holds only a Design-tab model, which
+    // loads no objects but a recipe.
+    const bool loaded = !res.empty() || !model().cad_recipe.empty();
+    if (loaded && !loaded_published && (load_restore || !(strategy & LoadStrategy::Silence))) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " call set_project_filename: " << (load_restore ? originfile : filename);
         p->set_project_filename(load_restore ? originfile : filename);
         if (load_restore && originfile.IsEmpty()) {
@@ -16586,11 +16654,11 @@ void Plater::load_project(wxString const& filename2,
         if (using_exported_file()) {
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << __LINE__ << " using ecported set project filename: " << filename;
             p->set_project_filename(filename);
-        } else if (loaded_published && !res.empty()) {
+        } else if (loaded_published && loaded) {
             // A "published" 3MF loads as a new project: its path must not become the project
             // filename (Save/Ctrl-S prompts for a destination instead of overwriting it);
             // reset() already cleared the project name, so restore the default title and keep
-            // the file in recents. Only on a successful load (res not empty): a failed or
+            // the file in recents. Only on a successful load: a failed or
             // cancelled load must not pollute "Recently opened".
             p->set_project_name(_L("Untitled"));
             if (!filename.IsEmpty())
@@ -16636,15 +16704,19 @@ void Plater::load_project(wxString const& filename2,
 }
 
 // BBS: save logic
-int Plater::save_project(bool saveAs)
+int Plater::save_project(bool saveAs, const wxString& path)
 {
     //if (up_to_date(false, false)) // should we always save
     //    return;
     auto filename = get_project_filename(".3mf");
-    if (!saveAs && filename.IsEmpty())
-        saveAs = true;
-    if (saveAs)
-        filename = p->get_export_file(FT_3MF);
+    if (!path.empty())
+        filename = path;
+    else {
+        if (!saveAs && filename.IsEmpty())
+            saveAs = true;
+        if (saveAs)
+            filename = p->get_export_file(FT_3MF);
+    }
     if (filename.empty())
         return wxID_NO;
     if (filename == "<cancel>")
@@ -17186,7 +17258,7 @@ void Plater::_calib_apply_belt_mode()
     changed_objects(obj_idxs);
 }
 
-void Plater::calib_pa(const Calib_Params& params)
+void Plater::calib_pa(const Calib_Params& params, bool skip_confirm)
 {
     // ORCA-Belt: PA Line / PA Pattern have the belt plumbing in place
     // (belt kinematics in world-coordinates mode draws them on the belt surface)
@@ -17202,7 +17274,7 @@ void Plater::calib_pa(const Calib_Params& params)
         }
     }
     const auto calib_pa_name = _L("Pressure Advance Test");
-    new_project(false, false, calib_pa_name);
+    new_project(skip_confirm, false, calib_pa_name);
     wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
     auto print_config = &wxGetApp().preset_bundle->prints.get_edited_preset().config;
     auto printer_config = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
@@ -17262,7 +17334,7 @@ void Plater::_calib_pa_pattern(const Calib_Params& params)
     print_config.set_key_value( "print_sequence", new ConfigOptionEnum(PrintSequence::ByLayer));
     
     //Orca: find jerk value to use in the test
-    if(!has_junction_deviation(printer_config) && print_config.get_abs_value_at("default_jerk", params.extruder_id) > 0){ // we have set a jerk value
+    if(!has_junction_deviation(*printer_config) && print_config.get_abs_value_at("default_jerk", params.extruder_id) > 0){ // we have set a jerk value
         auto jerk = print_config.get_abs_value_at("outer_wall_jerk", params.extruder_id); // get outer wall jerk
         if (jerk == 0) // if outer wall jerk is not defined, get inner wall jerk
             jerk = print_config.get_abs_value_at("inner_wall_jerk", params.extruder_id);
@@ -17279,7 +17351,7 @@ void Plater::_calib_pa_pattern(const Calib_Params& params)
         set_config_values<double, ConfigOptionFloatsNullable>(&print_config, "travel_jerk", jerk);
     }
 
-    if (has_junction_deviation(printer_config)){
+    if (has_junction_deviation(*printer_config)){
         set_config_values<double, ConfigOptionFloatsNullable>(&print_config, "default_junction_deviation", 0);
     }
     
@@ -17676,7 +17748,7 @@ void adjust_settings_for_flowrate_calib(ModelObjectPtrs& objects, bool linear, i
 }
 
 // ORCA: Add pattern parameter
-void Plater::calib_flowrate(bool is_linear, int pass, InfillPattern pattern) {
+void Plater::calib_flowrate(bool is_linear, int pass, InfillPattern pattern, bool skip_confirm) {
     if (pass != 1 && pass != 2)
         return;
     wxString calib_name;
@@ -17685,7 +17757,7 @@ void Plater::calib_flowrate(bool is_linear, int pass, InfillPattern pattern) {
     } else
         calib_name = wxString::Format(_L("Flowrate Test - Pass%d"), pass);
 
-    if (new_project(false, false, calib_name) == wxID_CANCEL)
+    if (new_project(skip_confirm, false, calib_name) == wxID_CANCEL)
         return;
 
     wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
@@ -17720,17 +17792,7 @@ void Plater::calib_flowrate(bool is_linear, int pass, InfillPattern pattern) {
 }
 
 
-// The belt provini tower (Calib_Params::test_model 1) is one embossed model per
-// temperature range.
-static std::string belt_temp_tower_asset(const Calib_Params &params)
-{
-    const int t_start = (int) lround(params.start);
-    const int t_end   = (int) lround(params.end);
-    return Slic3r::resources_dir() + "/calib/temperature_tower/belt_temp_tower_" +
-           std::to_string(t_start) + "_" + std::to_string(t_end) + ".stl";
-}
-
-void Plater::calib_temp(const Calib_Params& params) {
+void Plater::calib_temp(const Calib_Params& params, bool skip_confirm) {
     constexpr double base_temp_tower_nozzle_diameter = 0.4;
     constexpr double base_temp_tower_block_height = 10.0;
     constexpr int base_temp_tower_temp_step = 5;
@@ -17753,7 +17815,7 @@ void Plater::calib_temp(const Calib_Params& params) {
     }
 
     const auto calib_temp_name = _L("Nozzle temperature test");
-    new_project(false, false, calib_temp_name);
+    new_project(skip_confirm, false, calib_temp_name);
     wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
     if (params.mode != CalibMode::Calib_Temp_Tower)
         return;
@@ -18023,10 +18085,10 @@ void Plater::_calib_temp_belt_sectioned(const Calib_Params& params, double belt_
     p->background_process.fff_print()->set_calib_params(params);
 }
 
-void Plater::calib_max_vol_speed(const Calib_Params& params)
+void Plater::calib_max_vol_speed(const Calib_Params& params, bool skip_confirm)
 {
     const auto calib_vol_speed_name = _L("Max volumetric speed test");
-    new_project(false, false, calib_vol_speed_name);
+    new_project(skip_confirm, false, calib_vol_speed_name);
     wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
     if (params.mode != CalibMode::Calib_Vol_speed_Tower)
         return;
@@ -18104,10 +18166,10 @@ void Plater::calib_max_vol_speed(const Calib_Params& params)
     p->background_process.fff_print()->set_calib_params(new_params);
 }
 
-void Plater::calib_retraction(const Calib_Params& params)
+void Plater::calib_retraction(const Calib_Params& params, bool skip_confirm)
 {
     const auto calib_retraction_name = _L("Retraction");
-    new_project(false, false, calib_retraction_name);
+    new_project(skip_confirm, false, calib_retraction_name);
     wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
     if (params.mode != CalibMode::Calib_Retraction_tower)
         return;
@@ -18167,10 +18229,10 @@ void Plater::calib_retraction(const Calib_Params& params)
     p->background_process.fff_print()->set_calib_params(params);
 }
 
-void Plater::calib_VFA(const Calib_Params& params)
+void Plater::calib_VFA(const Calib_Params& params, bool skip_confirm)
 {
     const auto calib_vfa_name = _L("VFA test");
-    new_project(false, false, calib_vfa_name);
+    new_project(skip_confirm, false, calib_vfa_name);
     wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
     if (params.mode != CalibMode::Calib_VFA_Tower)
         return;
@@ -18251,10 +18313,10 @@ void Plater::calib_VFA(const Calib_Params& params)
     p->background_process.fff_print()->set_calib_params(calib_params);
 }
 
-void Plater::calib_input_shaping_freq(const Calib_Params& params)
+void Plater::calib_input_shaping_freq(const Calib_Params& params, bool skip_confirm)
 {
     const auto calib_input_shaping_name = _L("Input shaping Frequency test");
-    new_project(false, false, calib_input_shaping_name);
+    new_project(skip_confirm, false, calib_input_shaping_name);
     wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
     if (params.mode != CalibMode::Calib_Input_shaping_freq)
         return;
@@ -18268,7 +18330,7 @@ void Plater::calib_input_shaping_freq(const Calib_Params& params)
     auto printer_config  = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
     const auto gcode_flavor_option = printer_config->option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor");
 
-    if (has_junction_deviation(printer_config)) {
+    if (has_junction_deviation(*printer_config)) {
         printer_config->set_key_value("machine_max_junction_deviation", new ConfigOptionFloats {(std::max(printer_config->option<ConfigOptionFloats>("machine_max_junction_deviation")->values.front(), 0.25))});
         set_config_values<double, ConfigOptionFloatsNullable>(print_config, "default_junction_deviation", 0);
     } else {
@@ -18319,10 +18381,10 @@ void Plater::calib_input_shaping_freq(const Calib_Params& params)
     p->background_process.fff_print()->set_calib_params(params);
 }
 
-void Plater::calib_input_shaping_damp(const Calib_Params& params)
+void Plater::calib_input_shaping_damp(const Calib_Params& params, bool skip_confirm)
 {
     const auto calib_input_shaping_name = _L("Input shaping Damping test");
-    new_project(false, false, calib_input_shaping_name);
+    new_project(skip_confirm, false, calib_input_shaping_name);
     wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
     if (params.mode != CalibMode::Calib_Input_shaping_damp)
         return;
@@ -18336,7 +18398,7 @@ void Plater::calib_input_shaping_damp(const Calib_Params& params)
     auto printer_config  = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
     const auto gcode_flavor_option = printer_config->option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor");
 
-    if (has_junction_deviation(printer_config)) {
+    if (has_junction_deviation(*printer_config)) {
         printer_config->set_key_value("machine_max_junction_deviation", new ConfigOptionFloats {(std::max(printer_config->option<ConfigOptionFloats>("machine_max_junction_deviation")->values.front(), 0.25))});
         set_config_values<double, ConfigOptionFloatsNullable>(print_config, "default_junction_deviation", 0);
     } else {
@@ -18386,10 +18448,10 @@ void Plater::calib_input_shaping_damp(const Calib_Params& params)
     p->background_process.fff_print()->set_calib_params(params);
 }
 
-void Plater::Calib_Cornering(const Calib_Params& params)
+void Plater::Calib_Cornering(const Calib_Params& params, bool skip_confirm)
 {
     const auto Calib_Cornering = _L("Cornering test");
-    new_project(false, false, Calib_Cornering);
+    new_project(skip_confirm, false, Calib_Cornering);
     wxGetApp().mainframe->select_tab(TAB_ID_PREPARE);
     if (params.mode != CalibMode::Calib_Cornering)
         return;
@@ -18405,7 +18467,7 @@ void Plater::Calib_Cornering(const Calib_Params& params)
     auto filament_config = &wxGetApp().preset_bundle->filaments.get_edited_preset().config;
     auto printer_config  = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
 
-    if (has_junction_deviation(printer_config)) {
+    if (has_junction_deviation(*printer_config)) {
         printer_config->set_key_value("machine_max_junction_deviation", new ConfigOptionFloats{params.end});
         set_config_values<double, ConfigOptionFloatsNullable>(print_config, "default_junction_deviation", 0);
     } else {
@@ -19794,7 +19856,7 @@ static long GetNumberFromUser(  const wxString& msg,
 #endif
 }
 
-void Plater::set_number_of_copies(/*size_t num*/)
+void Plater::set_number_of_copies()
 {
     int obj_idx = p->get_selected_object_idx();
     if (obj_idx == -1)
@@ -19807,9 +19869,18 @@ void Plater::set_number_of_copies(/*size_t num*/)
     if (num < 0)
         return;
 
+    set_number_of_copies(num);
+}
+
+void Plater::set_number_of_copies(int num)
+{
+    int obj_idx = p->get_selected_object_idx();
+    if (obj_idx == -1)
+        return;
+
     Plater::TakeSnapshot snapshot(this, (boost::format("Set numbers of copies to %1%")%num).str());
 
-    int diff = num - (int)model_object->instances.size();
+    int diff = num - (int)p->model.objects[obj_idx]->instances.size();
     if (diff > 0)
         increase_instances(diff);
     else if (diff < 0)
@@ -20011,13 +20082,13 @@ void Plater::send_to_printer(bool isall)
 }
 
 //BBS export gcode 3mf to file
-void Plater::export_gcode_3mf(bool export_all)
+bool Plater::export_gcode_3mf(bool export_all, const boost::filesystem::path& given_output_path)
 {
     if (p->model.objects.empty())
-        return;
+        return false;
 
     if (p->process_completed_with_error == p->partplate_list.get_curr_plate_index())
-        return;
+        return false;
 
     //calc default_output_file, get default output file from background process
     fs::path default_output_file;
@@ -20028,18 +20099,18 @@ void Plater::export_gcode_3mf(bool export_all)
         // Also if there is something wrong with the current configuration, a pop-up dialog will be shown and the export will not be performed.
         unsigned int state = this->p->update_restart_background_process(false, false);
         if (state & priv::UPDATE_BACKGROUND_PROCESS_INVALID)
-            return;
+            return false;
         default_output_file = this->p->background_process.output_filepath_for_project(
             into_path(this->p->get_project_filename(".3mf")));
     }
     catch (const Slic3r::PlaceholderParserError& ex) {
         // Show the error with monospaced font.
         show_error(this, ex.what(), true);
-        return;
+        return false;
     }
     catch (const std::exception& ex) {
         show_error(this, ex.what(), false);
-        return;
+        return false;
     }
     default_output_file.replace_extension(".gcode.3mf");
     default_output_file = fs::path(Slic3r::fold_utf8_to_ascii(default_output_file.string()));
@@ -20047,8 +20118,8 @@ void Plater::export_gcode_3mf(bool export_all)
     //Get a last save path
     start_dir = appconfig.get_last_output_dir(default_output_file.parent_path().string(), false);
 
-    fs::path output_path;
-    {
+    fs::path output_path = given_output_path;
+    if (output_path.empty()) {
         std::string ext = default_output_file.extension().string();
         wxFileDialog dlg(this, _L("Save Sliced file as:"),
             start_dir,
@@ -20081,7 +20152,7 @@ void Plater::export_gcode_3mf(bool export_all)
         if (export_3mf(output_path, strategy, plate_idx) < 0) {
             // No file was written (e.g. a post-processing script failed), don't report a successful export.
             p->exporting_status = ExportingStatus::NOT_EXPORTING;
-            return;
+            return false;
         }
 
         RemovableDriveManager& removable_drive_manager = *wxGetApp().removable_drive_manager();
@@ -20094,6 +20165,7 @@ void Plater::export_gcode_3mf(bool export_all)
         appconfig.update_last_output_dir(output_path.parent_path().string(), false);
         p->notification_manager->push_exporting_finished_notification(output_path.string(), p->last_output_dir_path, on_removable);
     }
+    return !output_path.empty();
 }
 
 void Plater::send_gcode_finish(wxString name)
@@ -20133,9 +20205,9 @@ private:
 
 } // namespace
 
-void Plater::export_core_3mf()
+void Plater::export_core_3mf(const wxString& output_path)
 {
-    wxString path = p->get_export_file(FT_3MF);
+    wxString path = output_path.empty() ? p->get_export_file(FT_3MF) : output_path;
     if (path.empty()) { return; }
     const std::string path_u8 = into_u8(path);
     export_3mf(path_u8, SaveStrategy::Silence);
@@ -20496,7 +20568,7 @@ TriangleMesh Plater::combine_mesh_fff(const ModelObject& mo, int instance_id, st
 
 // BBS export with/without boolean, however, stil merge mesh
 #define EXPORT_WITH_BOOLEAN 0
-void Plater::export_stl(bool extended, bool selection_only, bool multi_stls, FileType file_type)
+void Plater::export_stl(bool extended, bool selection_only, bool multi_stls, FileType file_type, const wxString& output_path)
 {
     if (p->model.objects.empty()) { return; }
 
@@ -20513,7 +20585,11 @@ void Plater::export_stl(bool extended, bool selection_only, bool multi_stls, Fil
     }
 
     wxString path;
-    if (multi_stls) {
+    if (!output_path.empty()) {
+        path = output_path;
+        if (multi_stls && !path.EndsWith("/") && !path.EndsWith("\\"))
+            path += "/";
+    } else if (multi_stls) {
         wxDirDialog dlg(this, _L("Choose a directory"), from_u8(wxGetApp().app_config->get_last_dir()),
                         wxDD_DEFAULT_STYLE | wxDD_DIR_MUST_EXIST);
         if (dlg.ShowModal() == wxID_OK) {
@@ -21220,6 +21296,7 @@ void Plater::reslice()
     if (p->process_completed_with_error == p->partplate_list.get_curr_plate_index())
     {
         BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << boost::format(": process_completed_with_error, return directly");
+        p->note_request_refused(plate_validation_error(p->partplate_list.get_curr_plate_index()));
         reset_gcode_toolpaths();
         return;
     }
@@ -21230,13 +21307,16 @@ void Plater::reslice()
     // here too instead of letting the engine slice the broken slot as a plain filament.
     if (sidebar().has_broken_mixed_filament()) {
         BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": broken mixed filament detected, refuse to slice";
+        p->note_request_refused("A mixed filament has a deleted or mismatched component");
         return;
     }
 
     // In case SLA gizmo is in editing mode, refuse to continue
     // and notify user that he should leave it first.
-    if (get_view3D_canvas3D()->get_gizmos_manager().is_in_editing_mode(true))
+    if (get_view3D_canvas3D()->get_gizmos_manager().is_in_editing_mode(true)) {
+        p->note_request_refused("A gizmo is in editing mode; leave it first");
         return;
+    }
 
     // Enforce the missing-plugin block at the slicing choke point: menu/keyboard/queued triggers can
     // carry a stale enabled state while plugins load asynchronously. refresh_missing_plugin_block
@@ -21247,6 +21327,7 @@ void Plater::reslice()
         p->partplate_list.get_curr_plate()->update_slice_ready_status(false);
         p->main_frame->update_slice_print_status(MainFrame::eEventPlateUpdate, false);
         BOOST_LOG_TRIVIAL(warning) << __FUNCTION__ << ": required plugins missing; slicing blocked.";
+        p->note_request_refused("Plugins the project needs are missing");
         return;
     }
 
@@ -21256,6 +21337,7 @@ void Plater::reslice()
     if (!stop_queue(this->get_ui_job_worker(), timeout_ms)) {
         BOOST_LOG_TRIVIAL(error) << "Could not stop UI job within "
                                  << timeout_ms << " milliseconds timeout!";
+        p->note_request_refused("A running arrange or orient job did not stop");
         return;
     }
 
@@ -21744,6 +21826,12 @@ void Plater::eject_drive()
 }
 
 void Plater::take_snapshot(const std::string &snapshot_name) { p->take_snapshot(snapshot_name); }
+void Plater::take_plate_selection_snapshot()
+{
+    const uint64_t revision = p->project_revision;
+    p->take_snapshot("select partplate!");
+    p->project_revision = revision;
+}
 //void Plater::take_snapshot(const wxString &snapshot_name) { p->take_snapshot(snapshot_name); }
 void Plater::take_snapshot(const std::string &snapshot_name, UndoRedo::SnapshotType snapshot_type) { p->take_snapshot(snapshot_name, snapshot_type); }
 //void Plater::take_snapshot(const wxString &snapshot_name, UndoRedo::SnapshotType snapshot_type) { p->take_snapshot(snapshot_name, snapshot_type); }
@@ -21976,6 +22064,7 @@ void Plater::config_change_notification(const DynamicPrintConfig &config, const 
 
 void Plater::on_config_change(const DynamicPrintConfig &config)
 {
+    ++p->project_revision;
     bool update_scheduled = false;
     bool bed_shape_changed = false;
     bool exclusion_preview_changed = false;
@@ -23104,7 +23193,7 @@ int Plater::select_plate(int plate_index, bool need_slice)
 {
     int ret;
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: plate %2%, need_slice %3% ")%__LINE__ %plate_index  %need_slice;
-    take_snapshot("select partplate!");
+    take_plate_selection_snapshot();
     ret = p->partplate_list.select_plate(plate_index);
     if (!ret) {
         if (is_view3D_shown())
@@ -23328,6 +23417,7 @@ void Plater::validate_current_plate(bool& model_fits, bool& validate_error)
             if (!err.string.empty())
                 model_fits = false;
         }
+        p->last_validation_error = err.string;
 
         if (err.string.empty()) {
             p->partplate_list.get_curr_plate()->update_apply_result_invalid(false);
@@ -23603,7 +23693,6 @@ bool Plater::plugins_block_slicing() const
 }
 
 void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
-    int plate_index = evt.GetInt();
     PlateSettingsDialog dlg(this, _L("Plate Settings"), evt.GetString() == "only_layer_sequence");
     PartPlate* curr_plate = p->partplate_list.get_curr_plate();
     dlg.sync_bed_type(curr_plate->get_bed_type());
@@ -23630,56 +23719,51 @@ void Plater::open_platesettings_dialog(wxCommandEvent& evt) {
 
     dlg.sync_spiral_mode(curr_plate->get_spiral_vase_mode(), !curr_plate->has_spiral_mode_config());
 
-    dlg.Bind(EVT_SET_BED_TYPE_CONFIRM, [this, plate_index, &dlg](wxCommandEvent& e) {
-        PartPlate* curr_plate = p->partplate_list.get_curr_plate();
-        BedType old_bed_type = curr_plate->get_bed_type();
-        auto bt_sel = dlg.get_bed_type_choice();
-        if (old_bed_type != bt_sel) {
-            curr_plate->set_bed_type(bt_sel);
-            update_project_dirty_from_presets();
-            set_plater_dirty(true);
-        }
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select bed type %1% for plate %2% at plate side") % bt_sel % plate_index;
-
-        if (dlg.get_first_layer_print_seq_choice() != 0)
-            curr_plate->set_first_layer_print_sequence(dlg.get_first_layer_print_seq());
-        else
-            curr_plate->set_first_layer_print_sequence({});
-
-        if (dlg.get_other_layers_print_seq_choice() != 0)
-            curr_plate->set_other_layers_print_sequence(dlg.get_other_layers_print_seq_infos());
-        else
-            curr_plate->set_other_layers_print_sequence({});
-
-        int ps_sel = dlg.get_print_seq_choice();
-        if (ps_sel != 0)
-            curr_plate->set_print_seq(PrintSequence(ps_sel - 1));
-        else
-            curr_plate->set_print_seq(PrintSequence::ByDefault);
-
-        int spiral_sel = dlg.get_spiral_mode_choice();
-        if (spiral_sel == 1) {
-            curr_plate->set_spiral_vase_mode(true, false);
-        }
-        else if (spiral_sel == 2) {
-            curr_plate->set_spiral_vase_mode(false, false);
-        }
-        else {
-            curr_plate->set_spiral_vase_mode(false, true);
-        }
-
-        update_project_dirty_from_presets();
-        set_plater_dirty(true);
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select print sequence %1% for plate %2% at plate side") % ps_sel % plate_index;
-        auto plate_config = *(curr_plate->config());
-        wxGetApp().plater()->config_change_notification(plate_config, std::string("print_sequence"));
-        update();
-        wxGetApp().obj_list()->update_selections();
+    dlg.Bind(EVT_SET_BED_TYPE_CONFIRM, [this, &dlg](wxCommandEvent& e) {
+        const int ps_sel = dlg.get_print_seq_choice();
+        apply_plate_settings(p->partplate_list.get_curr_plate_index(), dlg.get_bed_type_choice(),
+                             dlg.get_first_layer_print_seq_choice() != 0 ? dlg.get_first_layer_print_seq() : std::vector<int>(),
+                             dlg.get_other_layers_print_seq_choice() != 0 ? dlg.get_other_layers_print_seq_infos() :
+                                                                            std::vector<LayerPrintSequence>(),
+                             ps_sel != 0 ? PrintSequence(ps_sel - 1) : PrintSequence::ByDefault, dlg.get_spiral_mode_choice());
         });
     dlg.set_plate_name(from_u8(curr_plate->get_plate_name()));
 
     dlg.ShowModal();
     rename_plate(p->partplate_list.get_curr_plate_index(), dlg.get_plate_name().ToUTF8().data());
+}
+
+void Plater::apply_plate_settings(int plate_index, BedType bed_type, const std::vector<int>& first_layer_seq,
+                                  const std::vector<LayerPrintSequence>& other_layers_seq, PrintSequence print_seq, int spiral_choice)
+{
+    PartPlate* plate = p->partplate_list.get_plate(plate_index);
+    if (plate == nullptr)
+        return;
+    if (plate->get_bed_type() != bed_type) {
+        plate->set_bed_type(bed_type);
+        update_project_dirty_from_presets();
+        set_plater_dirty(true);
+    }
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select bed type %1% for plate %2% at plate side") % bed_type % plate_index;
+
+    plate->set_first_layer_print_sequence(first_layer_seq);
+    plate->set_other_layers_print_sequence(other_layers_seq);
+    plate->set_print_seq(print_seq);
+
+    if (spiral_choice == 1)
+        plate->set_spiral_vase_mode(true, false);
+    else if (spiral_choice == 2)
+        plate->set_spiral_vase_mode(false, false);
+    else
+        plate->set_spiral_vase_mode(false, true);
+
+    update_project_dirty_from_presets();
+    set_plater_dirty(true);
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("select print sequence %1% for plate %2% at plate side") % int(print_seq) % plate_index;
+    auto plate_config = *(plate->config());
+    config_change_notification(plate_config, std::string("print_sequence"));
+    update();
+    wxGetApp().obj_list()->update_selections();
 }
 
 void Plater::open_filament_map_setting_dialog(wxCommandEvent &evt)
@@ -23987,7 +24071,7 @@ int Plater::select_plate_by_hover_id(int hover_id, bool right_click, bool isModi
                     set_plater_dirty(true);
                     update();
                 });
-                p->view3D->get_canvas3d()->get_wxglcanvas()->PopupMenu(&menu);
+                popup_menu(*p->view3D->get_canvas3d()->get_wxglcanvas(), menu);
                 ret = 1; // signal to caller: popup was shown, suppress plate context menu
             } else {
                 // Left-click: always cycles mode. The IMEX ghost renderer exposes
@@ -24085,6 +24169,159 @@ void Plater::set_bed_position(Vec2d& pos)
 bool Plater::is_background_process_slicing() const
 {
     return p->m_is_slicing;
+}
+
+bool Plater::is_slicing_any() const
+{
+    return p->m_is_slicing || p->background_process.running() || is_background_process_update_scheduled() || p->auto_reslice_pending;
+}
+
+void Plater::request_slice(bool all_plates)
+{
+    SimpleEvent evt(all_plates ? EVT_GLTOOLBAR_SLICE_ALL : EVT_GLTOOLBAR_SLICE_PLATE);
+    if (all_plates)
+        p->on_action_slice_all(evt);
+    else
+        p->on_action_slice_plate(evt);
+}
+
+void Plater::cancel_slicing()
+{
+    ++p->slice_cancel_seq;
+    // A pending automatic reslice counts as slicing (is_slicing_any()), so it is dropped too.
+    p->auto_reslice_timer.Stop();
+    ++p->auto_reslice_generation;
+    p->auto_reslice_pending      = false;
+    p->auto_reslice_after_cancel = false;
+    if (!p->background_process.idle())
+        p->background_process.stop();
+}
+
+bool Plater::export_gcode_to(const boost::filesystem::path& output_path)
+{
+    // Only a finished, valid slice is exported: anything that would start the background process
+    // first could leave the export scheduled behind a running slice, out of the caller's sight.
+    if (p->model.objects.empty() || is_slicing_any())
+        return false;
+    if (p->process_completed_with_error == p->partplate_list.get_curr_plate_index() ||
+        !p->partplate_list.get_curr_plate()->is_slice_result_valid())
+        return false;
+    p->notification_manager->new_export_began(false);
+    p->exporting_status     = ExportingStatus::EXPORTING_TO_LOCAL;
+    p->last_output_path     = output_path.string();
+    p->last_output_dir_path = output_path.parent_path().string();
+    if (!p->export_gcode(output_path, false, /*tracked=*/true)) {
+        p->exporting_status = ExportingStatus::NOT_EXPORTING;
+        return false;
+    }
+    return true;
+}
+
+uint64_t Plater::project_revision() const { return p->project_revision; }
+uint64_t Plater::slice_request_seq() const { return p->slice_request_seq; }
+
+bool Plater::slice_request_interrupted(uint64_t request_seq) const
+{
+    const auto& interrupted = p->interrupted_slice_requests;
+    return std::find(interrupted.begin(), interrupted.end(), request_seq) != interrupted.end();
+}
+
+uint64_t Plater::slice_run_seq() const { return p->slice_run_seq; }
+uint64_t Plater::export_seq() const { return p->export_seq; }
+uint64_t Plater::slice_cancel_seq() const { return p->slice_cancel_seq; }
+
+std::string Plater::plate_validation_error(int plate) const
+{
+    if (p->process_completed_with_error != plate)
+        return {};
+    const std::string& error = p->delayed_error_message.empty() ? p->last_validation_error : p->delayed_error_message;
+    return error.empty() ? std::string("The plate cannot be sliced as configured") : error;
+}
+
+std::optional<Plater::SliceRun> Plater::slice_run(uint64_t seq) const
+{
+    for (const SliceRun& run : p->slice_runs)
+        if (run.seq == seq)
+            return run;
+    return std::nullopt;
+}
+
+std::optional<Plater::ExportRun> Plater::export_run(uint64_t seq) const
+{
+    for (const ExportRun& run : p->export_runs)
+        if (run.seq == seq)
+            return run;
+    return std::nullopt;
+}
+
+void Plater::priv::begin_slice_request()
+{
+    if (m_is_slicing || background_process.running()) {
+        interrupted_slice_requests.push_back(slice_request_seq);
+        while (interrupted_slice_requests.size() > kKeepSliceRuns)
+            interrupted_slice_requests.pop_front();
+    }
+    ++slice_request_seq;
+}
+
+void Plater::priv::note_run_started()
+{
+    for (Plater::SliceRun& run : slice_runs)
+        if (!run.finished) {
+            run.finished              = true;
+            run.cancelled             = true;
+            run.revision_at_finish    = project_revision;
+            run.request_seq_at_finish = slice_request_seq;
+        }
+    Plater::SliceRun run;
+    run.seq                  = ++slice_run_seq;
+    run.request_seq_at_start = slice_request_seq;
+    run.for_request          = in_slice_request;
+    run.plate                = partplate_list.get_curr_plate_index();
+    slice_runs.push_back(run);
+    while (slice_runs.size() > kKeepSliceRuns)
+        slice_runs.pop_front();
+}
+
+void Plater::priv::note_run_rejected(const std::string& error)
+{
+    Plater::SliceRun run;
+    run.seq                   = ++slice_run_seq;
+    run.finished              = true;
+    run.error                 = error.empty() ? std::string("The plate cannot be sliced as configured") : error;
+    run.revision_at_finish    = project_revision;
+    run.request_seq_at_finish = slice_request_seq;
+    run.request_seq_at_start  = slice_request_seq;
+    run.for_request           = true;
+    run.plate                 = partplate_list.get_curr_plate_index();
+    slice_runs.push_back(run);
+    while (slice_runs.size() > kKeepSliceRuns)
+        slice_runs.pop_front();
+}
+
+void Plater::priv::note_process_completed(bool cancelled, bool success, const std::string& error)
+{
+    for (auto it = slice_runs.rbegin(); it != slice_runs.rend(); ++it)
+        if (!it->finished) {
+            it->finished              = true;
+            it->cancelled             = cancelled;
+            it->ok                    = success && !cancelled && error.empty();
+            it->error                 = error;
+            it->revision_at_finish    = project_revision;
+            it->request_seq_at_finish = slice_request_seq;
+            break;
+        }
+    if (exporting_status == ExportingStatus::NOT_EXPORTING)
+        return;
+    for (auto it = export_runs.rbegin(); it != export_runs.rend(); ++it)
+        if (!it->finished) {
+            it->finished           = true;
+            it->cancelled          = cancelled;
+            it->ok                 = success && !cancelled;
+            it->error              = error;
+            it->revision_at_finish = project_revision;
+            break;
+        }
 }
 
 //BBS: update slicing context
@@ -24536,7 +24773,9 @@ bool Plater::PopupMenu(wxMenu *menu, const wxPoint& pos)
     SuppressBackgroundProcessingUpdate sbpu;
     // When tracking a pop-up menu, postpone error messages from the slicing result.
     m_tracking_popup_menu = true;
-    bool out = wxGetApp().mainframe->PopupMenu(menu, pos);
+    // A menu built for this popup alone is freed once it has closed.
+    const std::unique_ptr<wxMenu> transient = p->menus.take_transient(menu);
+    bool out = popup_menu(*wxGetApp().mainframe, *menu, pos);
     m_tracking_popup_menu = false;
     if (! m_tracking_popup_menu_error_message.empty()) {
         // Don't know whether the CallAfter is necessary, but it should not hurt.

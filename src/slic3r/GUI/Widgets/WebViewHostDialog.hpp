@@ -4,7 +4,9 @@
 #include <nlohmann/json.hpp>
 #include <slic3r/GUI/GUI_Utils.hpp>
 
+#include <atomic>
 #include <exception>
+#include <memory>
 #include <string>
 
 #include <wx/event.h>
@@ -33,7 +35,7 @@ public:
                       // wxRESIZE_BORDER is required for a resizable frame on MSW/GTK; macOS derives
                       // one from wxMAXIMIZE_BOX alone, which is why these dialogs used to resize only there.
                       long style            = wxSYSTEM_MENU | wxCAPTION | wxCLOSE_BOX | wxMAXIMIZE_BOX | wxRESIZE_BORDER);
-    ~WebViewHostDialog() override = default;
+    ~WebViewHostDialog() override;
 
     bool create_webview(const std::string& resource_path,
                         const wxString& title,
@@ -76,6 +78,11 @@ protected:
 
     wxString build_resource_url(const std::string& resource_path) const;
     bool handle_common_script_command(const nlohmann::json& payload, int close_return_code = wxID_CANCEL);
+    // Re-raises this dialog after a transient modal it opened (file dialog, message box,
+    // progress dialog). Native macOS panels end by re-activating the app's main window
+    // (the mainframe) instead of this webview-hosting dialog, burying it; wx only
+    // compensates for generic wxDialog modals (wxDialog::EndModal raises the parent).
+    void restore_z_order();
 
     void on_dpi_changed(const wxRect& suggested_rect) override;
 
@@ -107,6 +114,9 @@ private:
     void on_webview_recreated(wxCommandEvent& event);
 
     wxWebView* m_browser{nullptr};
+    // False once the dialog is destroyed: call_web_handler() delivers its script later, from the event
+    // loop, and must not reach a dialog that is gone by then.
+    std::shared_ptr<std::atomic<bool>> m_host_alive{std::make_shared<std::atomic<bool>>(true)};
 };
 
 }} // namespace Slic3r::GUI

@@ -19,6 +19,8 @@
 #include <wx/string.h>
 #include <wx/filehistory.h>
 #include <wx/timer.h>
+#include <wx/dialog.h>
+#include <wx/weakref.h>
 #ifdef __APPLE__
 #include <wx/taskbar.h>
 #endif // __APPLE__
@@ -98,6 +100,7 @@ class DesignPanel;
 class MainFrame;
 class WebViewPanel;
 class ParamsDialog;
+class RecordingIndicator;
 enum class Shortcut : uint8_t;
 struct KeyChord;
 #ifdef __WXGTK__
@@ -385,6 +388,8 @@ public:
 
 	void        update_title_colour_after_set_title();
     void        show_option(bool show);
+    // The tab bar's REC pill, shown while a recording runs.
+    void        show_recording_indicator(bool show);
     void        init_tabpanel();
     void        create_preset_tabs();
     //BBS: GUI refactor
@@ -418,8 +423,14 @@ public:
 
     void        reslice_now();
     void        export_config();
+    // Shows the Run Script dialog, creating it the first time and raising the open one after.
+    void        show_script_runner();
     // Query user for the config file and open it.
     void        load_config_file();
+    // Import preset files (.json, .zip, .orca_printer, .orca_filament, .orca_bundle) as the Import Configs
+    // dialog does, then refresh the presets. `confirm` answers for each preset that exists already
+    // (0 no, 1 yes, 2 no to all, 3 yes to all). Returns the files imported.
+    std::vector<std::string> import_configs(std::vector<std::string> files, std::function<int(const std::string &)> confirm);
     // Open a config file. Return true if loaded.
     bool        load_config_file(const std::string &path);
 
@@ -446,6 +457,7 @@ public:
     void        select_prepare_for_gl_init();
     // Builds the lazy tab pages while the user is idle; post_init() calls it once.
     void        prebuild_pages_when_idle();
+    bool        prebuild_pending() const { return m_idle.pending(); }
     bool        Show(bool show = true) override;
     int         get_calibration_curr_tab();
     void        select_view(const std::string& direction);
@@ -508,6 +520,8 @@ public:
     Input_Shaping_Freq_Test_Dlg* m_IS_freq_calib_dlg{ nullptr };
     Input_Shaping_Damp_Test_Dlg* m_IS_damp_calib_dlg{ nullptr };
     Cornering_Test_Dlg* m_cornering_calib_dlg{ nullptr };
+    // Modeless and owned by this frame; the weak ref clears when it is destroyed.
+    wxWeakRef<wxDialog> m_script_runner;
 
     // BBS. Replace title bar and menu bar with top bar.
     BBLTopbar*            m_topbar{ nullptr };
@@ -556,6 +570,7 @@ public:
     SideButton* m_slice_option_btn{ nullptr };
     SideButton* m_print_btn{ nullptr };
     SideButton* m_print_option_btn{ nullptr };
+    RecordingIndicator* m_recording{ nullptr };
 
     SidePopup*  m_slice_option_pop_up{ nullptr };
 

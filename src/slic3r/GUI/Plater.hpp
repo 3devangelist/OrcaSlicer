@@ -2,6 +2,7 @@
 #define slic3r_Plater_hpp_
 
 #include "libslic3r/Config.hpp"
+#include "libslic3r/ParameterUtils.hpp"
 #include "libslic3r/PrintConfig.hpp"
 #include <cstddef>
 #include <map>
@@ -13,7 +14,9 @@
 #include "libslic3r/Point.hpp"
 #include "libslic3r/libslic3r.h"
 #include <atomic>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include "slic3r/GUI/Event.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include <string>
@@ -380,7 +383,8 @@ public:
     int new_project(bool skip_confirm = false, bool silent = false, const wxString& project_name = wxString(), bool reload_presets = true);
     // BBS: save & backup
     void load_project(wxString const & filename = "", wxString const & originfile = "-");
-    int save_project(bool saveAs = false);
+    // `path` saves there without asking (automation); empty keeps the interactive behaviour.
+    int save_project(bool saveAs = false, const wxString& path = {});
     //BBS download project by project id
     void import_model_id(wxString download_info);
     void download_project(const wxString& project_id);
@@ -409,16 +413,18 @@ public:
     // toolpath geometry at load time. Keeps the current layer range and only-gcode mode.
 
     // SoftFever
-    void calib_pa(const Calib_Params& params);
+    // Each test starts a new project; `skip_confirm` skips its prompts (save the project, keep or
+    // discard modified presets), keeping the modified presets, for a caller that has decided both.
+    void calib_pa(const Calib_Params& params, bool skip_confirm = false);
     //ORCA: Add pattern parameter to calib_flowrate
-    void calib_flowrate(bool is_linear, int pass, InfillPattern pattern = ipArchimedeanChords);
-    void calib_temp(const Calib_Params& params);
-    void calib_max_vol_speed(const Calib_Params& params);
-    void calib_retraction(const Calib_Params& params);
-    void calib_VFA(const Calib_Params& params);
-    void calib_input_shaping_freq(const Calib_Params& params);
-    void calib_input_shaping_damp(const Calib_Params& params);
-    void Calib_Cornering(const Calib_Params& params);
+    void calib_flowrate(bool is_linear, int pass, InfillPattern pattern = ipArchimedeanChords, bool skip_confirm = false);
+    void calib_temp(const Calib_Params& params, bool skip_confirm = false);
+    void calib_max_vol_speed(const Calib_Params& params, bool skip_confirm = false);
+    void calib_retraction(const Calib_Params& params, bool skip_confirm = false);
+    void calib_VFA(const Calib_Params& params, bool skip_confirm = false);
+    void calib_input_shaping_freq(const Calib_Params& params, bool skip_confirm = false);
+    void calib_input_shaping_damp(const Calib_Params& params, bool skip_confirm = false);
+    void Calib_Cornering(const Calib_Params& params, bool skip_confirm = false);
 
     BuildVolume_Type get_build_volume_type() const;
 
@@ -564,7 +570,10 @@ public:
     void remove_selected();
     void increase_instances(size_t num = 1);
     void decrease_instances(size_t num = 1);
-    void set_number_of_copies(/*size_t num*/);
+    // Asks for the selected object's number of instances.
+    void set_number_of_copies();
+    // Gives the selected object `num` instances in one undo step; 0 deletes it, as the dialog's 0 does.
+    void set_number_of_copies(int num);
     void fill_bed_with_copies();
     void fill_bed_with_instances();
     bool is_selection_empty() const;
@@ -580,9 +589,10 @@ public:
 
     void send_to_printer(bool isall = false);
     void export_gcode(bool prefer_removable);
-    void export_gcode_3mf(bool export_all = false);
+    // `output_path` writes there without the file dialog; returns whether the file was written.
+    bool export_gcode_3mf(bool export_all = false, const boost::filesystem::path& output_path = {});
     void send_gcode_finish(wxString name);
-    void export_core_3mf();
+    void export_core_3mf(const wxString& output_path = {});
     // Write the project to output_path as a copy: the project's file name, dirty state and model stay
     // as they are, and the signed-in account is not added as the designer. False when the write fails.
     bool export_3mf_copy(const boost::filesystem::path& output_path);
@@ -594,7 +604,9 @@ public:
     bool get_pending_published(std::vector<std::string>& out_keys, std::vector<Slic3r::PublishedMaterialEntry>& out_material, bool& out_legacy_process) const;
     void set_pending_published(const std::vector<std::string>& published_keys, const std::vector<Slic3r::PublishedMaterialEntry>& material_keys);
     static TriangleMesh combine_mesh_fff(const ModelObject& mo, int instance_id, std::function<void(const std::string&)> notify_func = {});
-    void export_stl(bool extended = false, bool selection_only = false, bool multi_stls = false, FileType file_type = FT_STL);
+    // `output_path` (a directory for multi_stls) skips the file dialog.
+    void export_stl(bool extended = false, bool selection_only = false, bool multi_stls = false, FileType file_type = FT_STL,
+                    const wxString& output_path = {});
     //BBS: remove amf
     //void export_amf();
     //BBS add extra param for exporting 3mf silence
@@ -637,6 +649,11 @@ public:
     void print_job_finished(wxCommandEvent &evt);
     void send_job_finished(wxCommandEvent& evt);
     void open_platesettings_dialog(wxCommandEvent& evt);
+    // What the Plate Settings dialog's OK sets on a plate: the bed type, the first and the other layers'
+    // filament orders (empty for Auto), the print sequence and spiral vase (0 as the global setting,
+    // 1 on, which asks for confirmation, 2 off), then the dirty state and the update that follow.
+    void apply_plate_settings(int plate_index, BedType bed_type, const std::vector<int>& first_layer_seq,
+                              const std::vector<LayerPrintSequence>& other_layers_seq, PrintSequence print_seq, int spiral_choice);
     void open_filament_map_setting_dialog(wxCommandEvent &evt);
     void on_change_color_mode(SimpleEvent& evt);
 	void eject_drive();
@@ -645,6 +662,9 @@ public:
     //void take_snapshot(const wxString &snapshot_name);
     void take_snapshot(const std::string &snapshot_name, UndoRedo::SnapshotType snapshot_type);
     //void take_snapshot(const wxString &snapshot_name, UndoRedo::SnapshotType snapshot_type);
+    // An undo point for selecting another plate. Selecting one changes nothing a slice or an export
+    // depends on, and Slice All selects each plate in turn, so project_revision() stays as it is.
+    void take_plate_selection_snapshot();
 
     void undo();
     void redo();
@@ -885,6 +905,65 @@ public:
     void set_bed_position(Vec2d& pos);
     //BBS: is the background process slicing currently
     bool is_background_process_slicing() const;
+    // Slicing in any form: the background process running, Slice All in progress, or an update or
+    // an automatic reslice after a change scheduled to start one.
+    bool is_slicing_any() const;
+
+    // A slice request from a user-facing entry point (toolbar, menu, shortcut, Speed Dial, MCP):
+    // the same path as the toolbar's Slice plate / Slice all.
+    void request_slice(bool all_plates);
+    // What the slicing progress notification's cancel button does.
+    void cancel_slicing();
+    // Starts a G-code export to `output_path` without a dialog. Refused while the background process
+    // is running; when it cannot start, nothing is left scheduled. Returns whether it started.
+    bool export_gcode_to(const boost::filesystem::path& output_path);
+
+    // Bookkeeping that lets an automated caller tell its own slice or export from anyone else's.
+    // The project revision moves on every edit (snapshot, undo/redo, preset or setting change,
+    // reset, load); slice requests, background runs and exports are numbered.
+    // Why `plate` can't be sliced as configured (its validation error), or "" when nothing holds it
+    // back.
+    std::string plate_validation_error(int plate) const;
+
+    // A background run, or a slice request the validation refused before running (recorded
+    // finished, with the validation error).
+    struct SliceRun
+    {
+        uint64_t    seq       = 0;
+        bool        finished  = false;
+        bool        cancelled = false;
+        bool        ok        = false; // finished with a result
+        std::string error;
+        uint64_t    revision_at_finish    = 0;
+        uint64_t    request_seq_at_finish = 0;
+        uint64_t    request_seq_at_start  = 0;
+        // Started by a slice request, or by Slice All moving to its next plate. A reslice from a
+        // Preview switch or automatic slicing, or an export, also runs under the latest request
+        // number but is not that request's.
+        bool        for_request           = false;
+        int         plate                 = -1;
+    };
+    struct ExportRun
+    {
+        uint64_t    seq = 0;
+        std::string path;
+        bool        finished  = false;
+        bool        ok        = false;
+        bool        cancelled = false;
+        std::string error;
+        uint64_t    revision_at_finish = 0;
+    };
+    uint64_t                 project_revision() const;
+    uint64_t                 slice_request_seq() const;
+    // Whether a later request came while request `request_seq` was still slicing.
+    bool                     slice_request_interrupted(uint64_t request_seq) const;
+    uint64_t                 slice_run_seq() const;
+    std::optional<SliceRun>  slice_run(uint64_t seq) const;
+    uint64_t                 export_seq() const;
+    std::optional<ExportRun> export_run(uint64_t seq) const;
+    // Counts cancel_slicing() calls, so a caller that has yet to request its slice can tell that a
+    // cancel came first.
+    uint64_t                 slice_cancel_seq() const;
     //BBS: update slicing context
     void update_slicing_context_to_current_partplate();
     //BBS: show object info

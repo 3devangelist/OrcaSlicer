@@ -244,8 +244,23 @@ void WebViewHostDialog::call_web_handler(const nlohmann::json& payload, const wx
     const wxString payload_text = wxString::FromUTF8(payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::ignore));
     const wxString script       = handler + wxT("(") + payload_text + wxT(")");
 
-    wxGetApp().CallAfter([this, script] { run_script(script); });
+    wxGetApp().CallAfter([this, script, alive = m_host_alive] {
+        if (alive->load())
+            run_script(script);
+    });
 }
+
+void WebViewHostDialog::restore_z_order()
+{
+    // Deferred so it runs on a clean stack after the modal has fully torn down; the
+    // alive guard covers the dialog being destroyed while the CallAfter is queued.
+    wxGetApp().CallAfter([this, alive = m_host_alive] {
+        if (alive->load() && IsShown())
+            Raise();
+    });
+}
+
+WebViewHostDialog::~WebViewHostDialog() { m_host_alive->store(false); }
 
 bool WebViewHostDialog::handle_common_script_command(const nlohmann::json& payload, int close_return_code)
 {

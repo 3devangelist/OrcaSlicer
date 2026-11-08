@@ -85,6 +85,9 @@
 #include "3DScene.hpp"
 #include "ParamsDialog.hpp"
 #include "PrintHostDialogs.hpp"
+#include "RecordingIndicator.hpp"
+#include "ScriptRunnerDialog.hpp"
+#include "NativeCommands.hpp"
 #include "libslic3r_version.h"
 #include "wxExtensions.hpp"
 #include "GUI_ObjectList.hpp"
@@ -112,6 +115,7 @@
 #include "../Utils/PrintHost.hpp"
 
 #include "GUI_App.hpp"
+#include "Mcp/McpService.hpp"
 #include "ImGuiWrapper.hpp"
 #include "OpenGLManager.hpp"
 #include "Shortcuts.hpp"
@@ -1340,6 +1344,14 @@ void MainFrame::update_edge_panels()
 void MainFrame::shutdown()
 {
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "MainFrame::shutdown enter";
+    // MCP calls must not reach panels that are about to go away. A language change rebuilds the
+    // frame, so the server only pauses until GUI_App::recreate_GUI() resumes it.
+    if (Mcp::McpService* mcp = wxGetApp().mcp_service()) {
+        if (wxGetApp().is_recreating_gui())
+            mcp->suspend();
+        else
+            wxGetApp().stop_mcp_service();
+    }
     m_idle.stop();
     if (ProjectPanel* project = ProjectPanel::if_built())
         project->shutdown();
@@ -1443,6 +1455,14 @@ void MainFrame::show_publish_button(bool show)
 {
     // m_publish_btn->Show(show);
     // Layout();
+}
+
+void MainFrame::show_recording_indicator(bool show)
+{
+    if (m_recording->Show(show)) {
+        m_recording->GetParent()->Layout();
+        fit_tab_labels(); // ORCA on the REC pill showing or going
+    }
 }
 
 void MainFrame::update_title_colour_after_set_title()
@@ -1797,7 +1817,7 @@ bool MainFrame::is_prepare_or_preview_tab() const
 
 void MainFrame::fit_tab_labels()
 {
-    if (!m_tabpanel || !m_slice_option_btn) // ignore layout change while slice/print buttons not visible
+    if (!m_tabpanel || !m_slice_option_btn || !m_recording) // ignore layout change while the side tools are not built
         return;
 
     auto* ctrl  = m_tabpanel->GetBtnsListCtrl();
@@ -1810,9 +1830,14 @@ void MainFrame::fit_tab_labels()
     m_tabpanel->Refresh();
     Layout();
 
+    // The side tools start at the REC pill while it shows, else at the slice button's dropdown.
+    const wxWindow* side = m_slice_option_btn;
+    if (m_recording->IsShown())
+        side = m_recording;
+
     // Compact (last to first)
     for (size_t i = count - 1; i >= 1; --i) {
-        int right = ScreenToClient(m_slice_option_btn->ClientToScreen({})).x;
+        int right = ScreenToClient(side->ClientToScreen({})).x;
         int left  = sizer->GetSize().GetWidth();
         // The overflow button sits between the tab buttons and the side tools, so it is not free space.
         if (const wxWindow* overflow = ctrl->GetOverflowButton())
@@ -2348,6 +2373,9 @@ wxBoxSizer* MainFrame::create_side_tools()
     m_slice_option_btn->Enable();
     m_print_option_btn->Enable();
     //sizer->Add(FromDIP(15), 0, 0, 0, 0);
+    m_recording = new RecordingIndicator(this);
+    m_recording->Hide();
+    sizer->Add(m_recording, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(15));
     sizer->Add(slice_panel);
     sizer->Add(FromDIP(15), 0, 0, 0, 0);
     sizer->Add(print_panel);
@@ -2939,6 +2967,19 @@ wxMenu* MainFrame::generate_help_menu()
         append_menu_item(helpMenu, wxID_ANY, _L("Benchmark 3D Scene"), _L("Measure how fast the 3D scene renders in Prepare and Preview"),
             [](wxCommandEvent&) { run_scene_benchmark(); });
 
+    // Screenshots and recordings of the app, for a bug report or a how-to; the Speed Dial has them too.
+    if (wxGetApp().is_editor()) {
+        helpMenu->AppendSeparator();
+        append_menu_item(helpMenu, wxID_ANY, _L("Take Screenshot"), _L("Save a picture of the main window"),
+            [](wxCommandEvent&) { NativeCommands::notify_result(NativeCommands::run("take_screenshot")); });
+        append_menu_item(helpMenu, wxID_ANY, _L("Start Recording") + dots, _L("Record a video of the main window"),
+            [](wxCommandEvent&) { NativeCommands::notify_result(NativeCommands::run("start_recording")); }, "", nullptr,
+            []() { return !NativeCommands::recording_active(); }, this);
+        append_menu_item(helpMenu, wxID_ANY, _L("Stop Recording"), _L("Stop the recording and save it"),
+            [](wxCommandEvent&) { NativeCommands::notify_result(NativeCommands::run("stop_recording")); }, "", nullptr,
+            []() { return NativeCommands::recording_active(); }, this);
+    }
+
     helpMenu->AppendSeparator();
 
     append_menu_item(helpMenu, wxID_ANY, _L("Show Tip of the Day"), _L("Show Tip of the Day"), [](wxCommandEvent&) {
@@ -3177,6 +3218,9 @@ void MainFrame::init_menubar_as_editor()
             []() { return true; }, this);
 
         append_submenu(fileMenu, export_menu, wxID_ANY, _L("Export"), "");
+
+        append_menu_item(fileMenu, wxID_ANY, _L("Run Script") + dots, _L("Open or paste a script and run its steps"),
+            [this](wxCommandEvent&) { show_script_runner(); }, "", nullptr, []() { return true; }, this);
 
         fileMenu->AppendSeparator();
 
@@ -4006,6 +4050,14 @@ struct ConfigsOverwriteConfirmDialog : MessageDialog
     }
 };
 
+void MainFrame::show_script_runner()
+{
+    if (!m_script_runner)
+        m_script_runner = new ScriptRunnerDialog(this);
+    m_script_runner->Show();
+    m_script_runner->Raise();
+}
+
 void MainFrame::export_config()
 {
     ExportConfigsDialog export_configs_dlg(nullptr);
@@ -4058,26 +4110,12 @@ void MainFrame::load_config_file()
         cfiles.push_back(into_u8(file));
         m_last_config = file;
     }
-    bool update = false;
-    wxGetApp().preset_bundle->import_presets(cfiles, [this](std::string const & name) {
+    cfiles = import_configs(cfiles, [this](std::string const & name) {
             ConfigsOverwriteConfirmDialog dlg(this, from_u8(name), false);
             int           res = dlg.ShowModal();
             int           ids[]{wxID_NO, wxID_YES, wxID_NOTOALL, wxID_YESTOALL};
             return std::find(ids, ids + 4, res) - ids;
-        },
-        ForwardCompatibilitySubstitutionRule::Enable,
-        *wxGetApp().app_config);
-    if (!cfiles.empty()) {
-        wxGetApp().app_config->update_config_dir(get_dir_name(cfiles.back()));
-        wxGetApp().load_current_presets();
-        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " presets has been import,and size is" << cfiles.size();
-        NetworkAgent* agent = wxGetApp().getAgent();
-        if (agent) {
-            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " user is: " << agent->get_user_id();
-        }
-    }
-    wxGetApp().preset_bundle->update_compatible(PresetSelectCompatibleType::Always);
-    update_side_preset_ui();
+        });
     auto msg = wxString::Format(_L_PLURAL("There is %d config imported. (Only non-system and compatible configs)",
         "There are %d configs imported. (Only non-system and compatible configs)", cfiles.size()), cfiles.size());
     if(cfiles.empty())
@@ -4085,6 +4123,23 @@ void MainFrame::load_config_file()
     MessageDialog dlg2(this,msg ,
                         _L("Import result"), wxOK);
     dlg2.ShowModal();
+}
+
+std::vector<std::string> MainFrame::import_configs(std::vector<std::string> files, std::function<int(const std::string &)> confirm)
+{
+    wxGetApp().preset_bundle->import_presets(files, confirm, ForwardCompatibilitySubstitutionRule::Enable, *wxGetApp().app_config);
+    if (!files.empty()) {
+        wxGetApp().app_config->update_config_dir(get_dir_name(files.back()));
+        wxGetApp().load_current_presets();
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " presets has been import,and size is" << files.size();
+        NetworkAgent* agent = wxGetApp().getAgent();
+        if (agent) {
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << " user is: " << agent->get_user_id();
+        }
+    }
+    wxGetApp().preset_bundle->update_compatible(PresetSelectCompatibleType::Always);
+    update_side_preset_ui();
+    return files;
 }
 
 // Load a config file containing a Print, Filament & Printer preset from command line.

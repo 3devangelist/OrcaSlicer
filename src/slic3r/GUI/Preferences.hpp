@@ -22,6 +22,9 @@
 #include "Widgets/TextInput.hpp"
 #include "Widgets/SpinInput.hpp"
 #include "Widgets/TabCtrl.hpp"
+#include "Widgets/Label.hpp"
+#include "Widgets/Button.hpp"
+#include "Widgets/RadioGroup.hpp"
 #include "slic3r/Utils/bambu_networking.hpp"
 
 namespace Slic3r { namespace GUI {
@@ -36,8 +39,8 @@ namespace Slic3r { namespace GUI {
 #define DESIGN_INPUT_SIZE wxSize(FromDIP(120), -1)
 #define DESIGN_LEFT_MARGIN 25
 
-// The tabs other dialogs open Preferences on.
-enum class PreferencesTab { General, Files, Behaviour, Control, Graphics, Online };
+// The tabs other dialogs and the Speed Dial's open_preferences open Preferences on.
+enum class PreferencesTab { General, Files, Behaviour, Control, Graphics, Online, Developer };
 
 class PreferencesDialog : public DPIDialog
 {
@@ -71,10 +74,12 @@ public:
 
     ~PreferencesDialog();
 
-    void select_tab(PreferencesTab tab, const std::string& option = {});   // and scrolls a combobox option's row into view, focused
+    // Shows `tab`, or the tab of `option` (a control named after its AppConfig key), scrolled to that control and focused.
+    void select_tab(PreferencesTab tab, const std::string& option = {});
 
     wxString m_backup_interval_time;
     wxTimer m_filament_height_timer;
+    wxTimer m_mcp_status_timer;   // refreshes the MCP status while another window holds the port
 
     void      create();
 
@@ -84,6 +89,14 @@ public:
     ::CheckBox * m_dark_mode_ckeckbox        = {nullptr};
     ::CheckBox * m_sync_user_preset_checkbox = {nullptr};
     ::CheckBox * m_bambu_cloud_checkbox      = {nullptr};
+    ::Label *    m_mcp_intro                 = {nullptr};
+    ::Label *    m_mcp_status_dot            = {nullptr};
+    ::Label *    m_mcp_status                = {nullptr};
+    ::Label *    m_mcp_address               = {nullptr};
+    RadioGroup * m_mcp_transport             = {nullptr};
+    ::Label *    m_mcp_transport_hint        = {nullptr};
+    ::Label *    m_mcp_agent_hint            = {nullptr};
+    ::Button *   m_mcp_copy_button           = {nullptr};
     ::CheckBox * m_skip_identical_frames_checkbox = {nullptr};
     ::TextInput *m_backup_interval_textinput = {nullptr};
     ::SpinInput *m_dim_previous_layers_brightness_input = {nullptr};
@@ -118,6 +131,14 @@ public:
     wxBoxSizer *create_item_backup(wxString title, wxString tooltip);
     wxBoxSizer *create_item_auto_reslice(wxString title, wxString checkbox_tooltip, wxString delay_tooltip);
     wxBoxSizer *create_item_bambu_cloud(wxString title, wxString tooltip);
+    wxBoxSizer *create_item_mcp_server(wxString title, wxString tooltip);
+    wxBoxSizer *create_item_mcp_port(wxString title, wxString tooltip);
+    wxBoxSizer *create_item_mcp_address(wxString title, wxString tooltip);
+    wxBoxSizer *create_item_mcp_transport(wxString title, wxString tooltip);
+    wxBoxSizer *create_item_mcp_connect(wxString title, wxString tooltip);
+    wxBoxSizer *create_item_mcp_python(wxString title, wxString tooltip);
+    wxBoxSizer *with_mcp_hint(wxBoxSizer *row, ::Label *hint);
+    void        update_mcp_status(const std::string& note = {});
     wxBoxSizer *create_item_network_plugin_version(wxString title, wxString tooltip);
 #ifdef WIN32
     wxBoxSizer *create_item_link_association(wxString url_prefix, wxString website_name);

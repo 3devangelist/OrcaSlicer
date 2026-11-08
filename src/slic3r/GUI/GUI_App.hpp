@@ -23,6 +23,7 @@
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r_version.h"
 #include "slic3r/GUI/UserNotification.hpp"
+#include "slic3r/GUI/Mcp/McpServicePtr.hpp"
 #include "slic3r/Utils/CloudDeleteQueue.hpp"
 #include "slic3r/Utils/CloudProvider.hpp"
 #include "libslic3r/Point.hpp"
@@ -55,6 +56,7 @@
 
 class wxMenuItem;
 class wxMenuBar;
+class wxTimer;
 class wxTopLevelWindow;
 class wxDataViewCtrl;
 class wxBookCtrlBase;
@@ -383,6 +385,9 @@ private:
     bool             m_show_error_msgdlg{false};
     wxString         m_info_dialog_content;
     std::unique_ptr<HttpServer> m_http_server;
+    Mcp::McpServicePtr m_mcp;
+    bool               m_mcp_wanted = false;        // the endpoint should be open: --mcp, the preference, or Preferences
+    std::unique_ptr<wxTimer> m_mcp_takeover_timer;  // retries the port another window holds; created on first need
     bool             m_show_gcode_window{true};
     boost::thread    m_check_network_thread;
 public:
@@ -661,6 +666,23 @@ public:
     void            start_http_server(int port, const std::string& provider = ORCA_CLOUD_PROVIDER);
     void            stop_http_server();
 
+    // MCP server for AI agents, from Preferences or --mcp/--mcp-script. `serve` opens the HTTP
+    // endpoint; a --mcp-script alone needs only the tool catalog. While another window that shares
+    // the configuration folder holds the port, this one keeps trying and takes it over when that
+    // window closes. UI thread.
+    bool            start_mcp_service(bool serve, std::string* error = nullptr);
+    // Closes the endpoint until the next start, as turning the server off in Preferences does; the
+    // service lives on, since an MCP call may have opened Preferences.
+    void            stop_mcp_endpoint();
+    // Stops the MCP service but keeps it: a call may still be on the stack (a nested event loop).
+    void            stop_mcp_service();
+    // Stops it and frees it once no call runs in it. Outside any event loop only (OnExit, CleanUp).
+    void            destroy_mcp_service();
+    // Moves the MCP endpoint to the port set in Preferences, which replaces one given on the command
+    // line for the rest of the session: a serving endpoint reopens on it, and a later start opens on it.
+    bool            restart_mcp_endpoint(std::string* error = nullptr);
+    Mcp::McpService* mcp_service() { return m_mcp.get(); }
+
     void            on_show_check_privacy_dlg(int online_login = 0, const std::string& provider = ORCA_CLOUD_PROVIDER);
     void            show_check_privacy_dlg(wxCommandEvent& evt);
     void            on_check_privacy_update(wxCommandEvent &evt);
@@ -705,6 +727,9 @@ public:
     bool            check_and_save_current_preset_changes(const wxString& caption, const wxString& header, bool remember_choice = true, bool use_dont_save_insted_of_discard = false);
     void            apply_keeped_preset_modifications();
     bool            check_and_keep_current_preset_changes(const wxString& caption, const wxString& header, int action_buttons, bool* postponed_apply_of_keeped_changes = nullptr);
+    // The Discard of check_and_keep_current_preset_changes(): drops every modified preset's unsaved
+    // changes and reloads the presets.
+    void            discard_current_preset_changes();
     bool            can_load_project();
     bool            check_print_host_queue();
     bool            checked_tab(Tab* tab);
@@ -730,9 +755,11 @@ public:
     // Called on the GUI thread after an audit prompt stores a grant outside the Plugins dialog.
     // Refreshes an existing dialog instance; never creates or raises it.
     void            notify_plugin_permissions_changed(const std::string& plugin_key);
-    // Dialog-free plugin actions used by the speed dial: they never require the Plugins dialog to be open.
+    // Dialog-free plugin action used by the speed dial: it never requires the Plugins dialog to be open.
     void            refresh_plugins();
-    void            install_local_plugin();
+    // Shows the current plugin list in the Plugins dialog when it is open, after a change made outside it
+    // (the speed dial's refresh or install, a plugin loading). GUI thread; never creates or raises it.
+    void            update_plugins_dialog();
     void            open_terminal_dialog();
     void            open_speed_dial();
     ActionRegistry& action_registry() { return *m_action_registry; }

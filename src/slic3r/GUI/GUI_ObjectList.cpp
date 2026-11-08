@@ -1,4 +1,5 @@
 #include "libslic3r/libslic3r.h"
+#include "slic3r/GUI/SyntheticInput.hpp"
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/LifecycleEvents.hpp"
@@ -223,7 +224,7 @@ ObjectList::ObjectList(wxWindow* parent) :
     Bind(wxEVT_DATAVIEW_SELECTION_CHANGED, [this](wxDataViewEvent& event) {
         // detect the current mouse position here, to pass it to list_manipulation() method
         // if we detect it later, the user may have moved the mouse pointer while calculations are performed, and this would mess-up the HitTest() call performed into list_manipulation()
-        if (!GetScreenRect().Contains(wxGetMousePosition())) {
+        if (!GetScreenRect().Contains(get_mouse_state().GetPosition())) {
             return;
         }
 #ifndef __WXOSX__
@@ -251,7 +252,7 @@ ObjectList::ObjectList(wxWindow* parent) :
 		// Workaround for entering the column editing mode on Windows. Simulate keyboard enter when another column of the active line is selected.
 		int new_selected_column = -1;
 #endif //__WXMSW__
-        if (wxGetKeyState(WXK_SHIFT))
+        if (Slic3r::GUI::get_key_state(WXK_SHIFT))
         {
             wxDataViewItemArray sels;
             GetSelections(sels);
@@ -1347,18 +1348,12 @@ void ObjectList::paste_layers_into_list()
         cache_ranges.empty() || printer_technology() == ptSLA)
         return;
 
-    const wxDataViewItem object_item = m_objects_model->GetItemById(obj_idx);
-    wxDataViewItem layers_item = m_objects_model->GetLayerRootItem(object_item);
-    if (layers_item)
-        m_objects_model->Delete(layers_item);
-
     t_layer_config_ranges& ranges = object(obj_idx)->layer_config_ranges;
 
-    // and create Layer item(s) according to the layer_config_ranges
     for (const auto& range : cache_ranges)
         ranges.emplace(range);
 
-    layers_item = add_layer_root_item(object_item);
+    const wxDataViewItem layers_item = reload_layer_rows(obj_idx);
 
     changed_object(obj_idx);
 
@@ -1513,7 +1508,7 @@ void ObjectList::OnChar(wxKeyEvent& event)
     if (event.GetKeyCode() == WXK_BACK){
         remove();
     }
-    else if (wxGetKeyState(wxKeyCode('A')) && wxGetKeyState(WXK_SHIFT))
+    else if (Slic3r::GUI::get_key_state(wxKeyCode('A')) && Slic3r::GUI::get_key_state(WXK_SHIFT))
         select_item_all_children();
 
     event.Skip();
@@ -2284,19 +2279,19 @@ bool ObjectList::is_instance_or_object_selected()
     return selection.is_single_full_instance() || selection.is_single_full_object();
 }
 
+int ObjectList::selected_obj_idx_for_subobject() const
+{
+    // we can add volumes for Object or Instance
+    const wxDataViewItem item = GetSelection();
+    if (!item || !(m_objects_model->GetItemType(item)&(itObject|itInstance)))
+        return -1;
+    return m_objects_model->GetObjectIdByItem(item);
+}
+
 void ObjectList::load_subobject(ModelVolumeType type, bool from_galery/* = false*/)
 {
-    wxDataViewItem item = GetSelection();
-    // we can add volumes for Object or Instance
-    if (!item || !(m_objects_model->GetItemType(item)&(itObject|itInstance)))
+    if (selected_obj_idx_for_subobject() < 0)
         return;
-    const int obj_idx = m_objects_model->GetObjectIdByItem(item);
-
-    if (obj_idx < 0) return;
-
-    // Get object item, if Instance is selected
-    if (m_objects_model->GetItemType(item)&itInstance)
-        item = m_objects_model->GetItemById(obj_idx);
 
     wxArrayString input_files;
     /*if (from_galery) {
@@ -2310,6 +2305,14 @@ void ObjectList::load_subobject(ModelVolumeType type, bool from_galery/* = false
     if (input_files.IsEmpty())
         return;
 
+    load_subobject(type, input_files, from_galery);
+}
+
+void ObjectList::load_subobject(ModelVolumeType type, const wxArrayString& input_files, bool from_galery, std::string* error)
+{
+    const int obj_idx = selected_obj_idx_for_subobject();
+    if (obj_idx < 0) return;
+
     take_snapshot((type == ModelVolumeType::MODEL_PART) ? _u8L("Load Part") : _u8L("Load Modifier"));
 
     std::vector<ModelVolume*> volumes;
@@ -2318,7 +2321,7 @@ void ObjectList::load_subobject(ModelVolumeType type, bool from_galery/* = false
     if (type == ModelVolumeType::MODEL_PART)
         load_part(*(*m_objects)[obj_idx], volumes, type, from_galery);
     else*/
-        load_modifier(input_files, *(*m_objects)[obj_idx], volumes, type, from_galery);
+        load_modifier(input_files, *(*m_objects)[obj_idx], volumes, type, from_galery, error);
 
     if (volumes.empty())
         return;
@@ -2402,7 +2405,7 @@ void ObjectList::load_part(ModelObject& model_object, std::vector<ModelVolume*>&
     }
 }
 */
-void ObjectList::load_modifier(const wxArrayString& input_files, ModelObject& model_object, std::vector<ModelVolume*>& added_volumes, ModelVolumeType type, bool from_galery)
+void ObjectList::load_modifier(const wxArrayString& input_files, ModelObject& model_object, std::vector<ModelVolume*>& added_volumes, ModelVolumeType type, bool from_galery, std::string* error)
 {
     // ! ysFIXME - delete commented code after testing and rename "load_modifier" to something common
     //if (type == ModelVolumeType::MODEL_PART)
@@ -2481,11 +2484,15 @@ void ObjectList::load_modifier(const wxArrayString& input_files, ModelObject& mo
                 model = Model::read_from_file(input_file, nullptr, nullptr, LoadStrategy::LoadModel);
             }
         }
-        catch (std::exception&) {
+        catch (std::exception& e) {
             if (!is_user_cancel) {
-                // auto msg = _L("Error!") + " " + input_file + " : " + e.what() + ".";
-                auto msg = _L("Error!") + " " + _L("Failed to get the model data in the current file.");
-                show_error(parent, msg);
+                if (error != nullptr)
+                    *error = input_file + ": " + e.what();
+                else {
+                    // auto msg = _L("Error!") + " " + input_file + " : " + e.what() + ".";
+                    auto msg = _L("Error!") + " " + _L("Failed to get the model data in the current file.");
+                    show_error(parent, msg);
+                }
             }
             return;
         }
@@ -2544,23 +2551,35 @@ void ObjectList::load_modifier(const wxArrayString& input_files, ModelObject& mo
     }
 }
 
+std::vector<const char*> primitive_size_names(const std::string& type_name)
+{
+    if (type_name == "Cube")
+        return {L("X"), L("Y"), L("Z")};
+    if (type_name == "Cylinder" || type_name == "Cone" || type_name == "Disc")
+        return {L("Diameter"), L("Height")};
+    if (type_name == "Sphere")
+        return {L("Diameter")};
+    if (type_name == "Torus")
+        // TRN Size of a torus (ring): the diameter of its hole and the thickness of the ring.
+        return {L("Inner diameter"), L("Tube diameter")};
+    return {};
+}
+
 // The dimensions the size dialog asks for, filled with the default size of the primitive.
 static std::vector<PrimitiveSizeDialog::Field> primitive_size_fields(const std::string& type_name)
 {
     const double side = wxGetApp().plater()->canvas3D()->get_size_proportional_to_max_bed_size(0.1);
 
-    if (type_name == "Cube")
-        return {{_L("X"), side}, {_L("Y"), side}, {_L("Z"), side}};
-    if (type_name == "Cylinder" || type_name == "Cone")
-        return {{_L("Diameter"), side}, {_L("Height"), side}};
-    if (type_name == "Sphere")
-        return {{_L("Diameter"), side}};
+    std::vector<PrimitiveSizeDialog::Field> fields;
+    for (const char* name : primitive_size_names(type_name))
+        fields.push_back({_(name), side});
     if (type_name == "Disc")
-        return {{_L("Diameter"), side}, {_L("Height"), 0.2}};
-    if (type_name == "Torus")
-        // TRN Size of a torus (ring): the diameter of its hole and the thickness of the ring.
-        return {{_L("Inner diameter"), 0.75 * side}, {_L("Tube diameter"), 0.25 * side}};
-    return {};
+        fields[1].value = 0.2;
+    else if (type_name == "Torus") {
+        fields[0].value = 0.75 * side;
+        fields[1].value = 0.25 * side;
+    }
+    return fields;
 }
 
 // Replaces the default values with the size the user saved for the primitive, stored as space separated numbers.
@@ -2581,12 +2600,15 @@ static void apply_saved_primitive_size(std::vector<PrimitiveSizeDialog::Field>& 
         fields[i].value = values[i];
 }
 
-// interactive starts from the size the user saved and asks for the size unless the user turned the dialog off;
-// otherwise the primitive gets its built-in default size. nullopt when the user cancels.
-static std::optional<std::vector<double>> primitive_size(const std::string& type_name, bool interactive)
+// The size given, when it has a value per field. Otherwise interactive starts from the size the user saved and asks
+// for the size unless the user turned the dialog off, and a call that is not interactive gets the built-in default
+// size. nullopt when the user cancels or the given size has the wrong number of values.
+static std::optional<std::vector<double>> primitive_size(const std::string& type_name, bool interactive, const std::vector<double>& given)
 {
-    std::vector<PrimitiveSizeDialog::Field> fields     = primitive_size_fields(type_name);
-    AppConfig*                              app_config = wxGetApp().app_config;
+    std::vector<PrimitiveSizeDialog::Field> fields = primitive_size_fields(type_name);
+    if (!given.empty())
+        return given.size() == fields.size() ? std::optional(given) : std::nullopt;
+    AppConfig* app_config = wxGetApp().app_config;
     if (interactive && !fields.empty()) {
         apply_saved_primitive_size(fields, app_config->get("primitive_size", type_name));
         if (app_config->get_bool("enable_primitive_size_dialog")) {
@@ -2643,13 +2665,14 @@ static TriangleMesh create_mesh(const std::string& type_name, const std::vector<
     return mesh;
 }
 
-void ObjectList::load_generic_subobject(const std::string& type_name, const ModelVolumeType type, bool interactive)
+void ObjectList::load_generic_subobject(const std::string& type_name, const ModelVolumeType type, bool interactive,
+                                        const std::vector<double>& given_size)
 {
     // BBS: single snapshot
     Plater::SingleSnapshot single(wxGetApp().plater());
 
     if (type == ModelVolumeType::INVALID) {
-        load_shape_object(type_name, interactive);
+        load_shape_object(type_name, interactive, given_size);
         return;
     }
 
@@ -2668,7 +2691,7 @@ void ObjectList::load_generic_subobject(const std::string& type_name, const Mode
     if (instance_idx == -1)
         return;
 
-    const std::optional<std::vector<double>> size = primitive_size(type_name, interactive);
+    const std::optional<std::vector<double>> size = primitive_size(type_name, interactive, given_size);
     if (!size)
         return;
 
@@ -2736,7 +2759,7 @@ void ObjectList::load_generic_subobject(const std::string& type_name, const Mode
     wxGetApp().params_panel()->switch_to_object(true);
 
     //Show Dialog
-    if (wxGetApp().app_config->get("do_not_show_modifer_tips").empty()) {
+    if (interactive && wxGetApp().app_config->get("do_not_show_modifer_tips").empty()) {
         TipsDialog dlg(wxGetApp().mainframe, _L("Add Modifier"), _L("Switch to per-object setting mode to edit modifier settings."), "do_not_show_modifer_tips");
         dlg.ShowModal();
     }
@@ -2753,18 +2776,22 @@ void ObjectList::switch_to_object_process()
     }
 }
 
-void ObjectList::load_shape_object(const std::string &type_name, bool interactive)
+bool ObjectList::can_add_shape_object() const
 {
-    const Selection& selection = wxGetApp().plater()->canvas3D()->get_selection();
-    //assert(selection.get_object_idx() == -1); // Add nothing is something is selected on 3DScene
-    if (selection.get_object_idx() != -1)
+    return wxGetApp().plater()->canvas3D()->get_selection().get_object_idx() == -1;
+}
+
+void ObjectList::load_shape_object(const std::string &type_name, bool interactive, const std::vector<double>& given_size)
+{
+    // Add nothing while an object is selected on the 3D scene.
+    if (!can_add_shape_object())
         return;
 
     const int obj_idx = m_objects->size();
     if (obj_idx < 0)
         return;
 
-    const std::optional<std::vector<double>> size = primitive_size(type_name, interactive);
+    const std::optional<std::vector<double>> size = primitive_size(type_name, interactive, given_size);
     if (!size)
         return;
 
@@ -3623,6 +3650,14 @@ wxDataViewItem ObjectList::add_layer_root_item(const wxDataViewItem obj_item)
     return layers_item;
 }
 
+wxDataViewItem ObjectList::reload_layer_rows(const int obj_idx)
+{
+    const wxDataViewItem object_item = m_objects_model->GetItemById(obj_idx);
+    if (const wxDataViewItem layers_item = m_objects_model->GetLayerRootItem(object_item))
+        m_objects_model->Delete(layers_item);
+    return add_layer_root_item(object_item);
+}
+
 DynamicPrintConfig ObjectList::get_default_layer_config(const int obj_idx)
 {
     DynamicPrintConfig config;
@@ -3630,10 +3665,7 @@ DynamicPrintConfig ObjectList::get_default_layer_config(const int obj_idx)
                             object(obj_idx)->config.opt_float("layer_height") :
                             wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_float("layer_height");
     config.set_key_value("layer_height",new ConfigOptionFloat(layer_height));
-    // BBS
-    int extruder = object(obj_idx)->config.has("extruder") ?
-        object(obj_idx)->config.opt_int("extruder") :
-        wxGetApp().preset_bundle->prints.get_edited_preset().config.opt_float("extruder");
+    // A new range prints with the object's filament ("Default").
     config.set_key_value("extruder",    new ConfigOptionInt(0));
 
     return config;
@@ -4821,13 +4853,13 @@ void ObjectList::del_layer_range(const t_layer_height_range& range)
     select_item(selectable_item);
 }
 
-static double get_min_layer_height(const int extruder_idx)
+double get_min_layer_height(const int extruder_idx)
 {
     const DynamicPrintConfig& config = wxGetApp().preset_bundle->printers.get_edited_preset().config;
     return config.opt_float("min_layer_height", std::max(0, extruder_idx - 1));
 }
 
-static double get_max_layer_height(const int extruder_idx)
+double get_max_layer_height(const int extruder_idx)
 {
     const DynamicPrintConfig& config = wxGetApp().preset_bundle->printers.get_edited_preset().config;
     int extruder_idx_zero_based = std::max(0, extruder_idx - 1);
@@ -4989,7 +5021,12 @@ bool ObjectList::edit_layer_range(const t_layer_height_range& range, coordf_t la
     if (obj_idx < 0)
         return false;
 
-    ModelConfig* config = &object(obj_idx)->layer_config_ranges[range];
+    // A range editor losing focus may report an edit of a range that undo or a replacement of the
+    // object's ranges has removed meanwhile; indexing would add it back without a layer height.
+    const auto it = object(obj_idx)->layer_config_ranges.find(range);
+    if (it == object(obj_idx)->layer_config_ranges.end())
+        return false;
+    ModelConfig* config = &it->second;
     if (fabs(layer_height - config->opt_float("layer_height")) < EPSILON)
         return false;
 
@@ -5013,6 +5050,9 @@ bool ObjectList::edit_layer_range(const t_layer_height_range& range, const t_lay
     // But edit_layer_range(...) function can be called, when Selection in ObjectList could be changed
     const int obj_idx = m_selected_object_id;
     if (obj_idx < 0) return false;
+    // As above: the range may be gone, and moving it would add an empty one.
+    if (object(obj_idx)->layer_config_ranges.count(range) == 0)
+        return false;
 
     // BBS: remove snapeshot name "Edit Height Range"
     take_snapshot("");
@@ -5598,7 +5638,7 @@ bool ObjectList::check_last_selection(wxString& msg_str)
     if (!m_last_selected_item)
         return true;
 
-    const bool is_shift_pressed = wxGetKeyState(WXK_SHIFT);
+    const bool is_shift_pressed = Slic3r::GUI::get_key_state(WXK_SHIFT);
 
     /* We can't mix Volumes, Layers and Objects/Instances.
      * So, show information about it
@@ -6039,7 +6079,7 @@ static void move_volume_to_end(ModelObject* obj, ModelVolume* volume)
     }
 }
 
-void ObjectList::set_volume_type(ModelVolumeType new_type, bool preserve_ps_subtype)
+wxString ObjectList::set_volume_type(ModelVolumeType new_type, bool preserve_ps_subtype, bool show_errors)
 {
     struct VolumeSelection {
         int          object_idx;
@@ -6101,7 +6141,7 @@ void ObjectList::set_volume_type(ModelVolumeType new_type, bool preserve_ps_subt
                 collect_from_canvas(wxGetApp().plater()->get_view3D_canvas3D());
         }
         if (volumes.empty())
-            return;
+            return {};
     }
 
     // Defense-in-depth safety net against issue #5070: SVG/text volumes carry emboss metadata
@@ -6112,17 +6152,19 @@ void ObjectList::set_volume_type(ModelVolumeType new_type, bool preserve_ps_subt
     // Support entries in the old choice dialog; the UI-side guard for the current submenu lives
     // in MenuFactory::append_menu_item_change_type, see #13120).
     // The same rationale applies to any Precise Seam subtype.
-    // This block must never be reachable under a healthy UI; if it ever logs, the UI guard has
-    // been bypassed (new entry point, refactor, plugin, etc.) and should be investigated.
+    // The menu never offers these types for such parts, so reaching this block from it (show_errors)
+    // means the UI guard has been bypassed and should be investigated. The Speed Dial's type
+    // commands have no such guard and report the reason instead.
     if (new_type == ModelVolumeType::SUPPORT_BLOCKER || new_type == ModelVolumeType::SUPPORT_ENFORCER
         || is_precise_seam(new_type)) {
         const bool has_text_or_svg = std::any_of(volumes.begin(), volumes.end(),
             [](const VolumeSelection& sel) { return sel.volume->is_svg() || sel.volume->is_text(); });
         if (has_text_or_svg) {
-            BOOST_LOG_TRIVIAL(error) << __FUNCTION__
-                << ": blocked attempt to set SUPPORT_BLOCKER/ENFORCER or Precise Seam on SVG/text volume; "
-                << "UI guard should have prevented this -- possible regression in the Change Type menu";
-            return;
+            if (show_errors)
+                BOOST_LOG_TRIVIAL(error) << __FUNCTION__
+                    << ": blocked attempt to set SUPPORT_BLOCKER/ENFORCER or Precise Seam on SVG/text volume; "
+                    << "UI guard should have prevented this -- possible regression in the Change Type menu";
+            return _L("A text or SVG part can only be a part, a negative part or a modifier.");
         }
     }
 
@@ -6150,7 +6192,7 @@ void ObjectList::set_volume_type(ModelVolumeType new_type, bool preserve_ps_subt
         });
 
     if (!any_diff)
-        return;
+        return {};
 
     // --- Last-solid-part guard (pre-existing behavior) ---
     // When converting away from MODEL_PART, ensure at least one solid part remains per object.
@@ -6173,8 +6215,10 @@ void ObjectList::set_volume_type(ModelVolumeType new_type, bool preserve_ps_subt
         for (const auto& sel : selected_part_cnt) {
             auto it = total_part_cnt.find(sel.first);
             if (it != total_part_cnt.end() && it->second > 0 && sel.second == it->second) {
-                Slic3r::GUI::show_error(nullptr, _(L("The type of the last solid object part cannot be changed.")));
-                return;
+                const wxString why = _(L("The type of the last solid object part cannot be changed."));
+                if (show_errors)
+                    Slic3r::GUI::show_error(nullptr, why);
+                return why;
             }
         }
     }
@@ -6226,6 +6270,7 @@ void ObjectList::set_volume_type(ModelVolumeType new_type, bool preserve_ps_subt
         SetSelections(new_selection);
         m_prevent_list_events = false;
     }
+    return {};
 }
 
 void ObjectList::last_volume_is_deleted(const int obj_idx)
@@ -6463,13 +6508,18 @@ void ObjectList::rename_item()
     if (new_name.IsEmpty())
         return;
 
-    if (Plater::has_illegal_filename_characters(new_name)) {
+    if (!rename_item(item, new_name))
         Plater::show_illegal_characters_warning(this);
-        return;
-    }
+}
+
+bool ObjectList::rename_item(const wxDataViewItem& item, const wxString& new_name)
+{
+    if (Plater::has_illegal_filename_characters(new_name))
+        return false;
 
     if (m_objects_model->SetName(new_name, item))
         update_name_in_model(item);
+    return true;
 }
 
 void ObjectList::fix_through_cgal()
@@ -6996,20 +7046,24 @@ void ObjectList::OnEditingDone(wxDataViewEvent &event)
 // BBS: remove "const" qualifier
 void ObjectList::set_extruder_for_selected_items(const int extruder)
 {
+    wxDataViewItemArray sels;
+    GetSelections(sels);
+    set_extruder_for_items(sels, extruder);
+}
+
+void ObjectList::set_extruder_for_items(const wxDataViewItemArray& items, const int extruder)
+{
     // BBS: check extruder id
     std::vector<std::string> colors = wxGetApp().plater()->get_extruder_colors_from_plater_config();
     if (extruder > colors.size())
         return;
 
-    wxDataViewItemArray sels;
-    GetSelections(sels);
-
-    if (sels.empty())
+    if (items.empty())
         return;
 
     take_snapshot(_u8L("Change Filaments"));
 
-    for (const wxDataViewItem& sel_item : sels)
+    for (const wxDataViewItem& sel_item : items)
     {
         /* We can change extruder for Object/Volume only.
          * So, if Instance is selected, get its Object item and change it

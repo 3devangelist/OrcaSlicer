@@ -53,6 +53,8 @@
 #include <vector>
 #include <string>
 #include <wx/string.h>
+
+class wxImage;
 #include <wx/colour.h>
 #include <wx/time.h>
 #include <wx/timer.h>
@@ -379,7 +381,7 @@ class GLCanvas3D
         Vec2d position{ DBL_MAX, DBL_MAX };
         bool ignore_left_up{ false };
         Drag drag;
-        bool ignore_right_up;
+        bool ignore_right_up{ false };
         // ORCA a button was pressed on toolbar empty areas, swallow events until it is released
         bool down_on_toolbar{ false };
 
@@ -650,6 +652,10 @@ private:
 #endif
     unsigned int m_last_w, m_last_h;
     bool m_in_render;
+    // Set only during render_and_capture(): the frame is read back into it before the swap.
+    wxImage* m_frame_capture{ nullptr };
+    // Frames presented so far; see presented_frames().
+    uint64_t m_presented_frames{ 0 };
     // How many canvases are inside _render_frame() right now - see is_frame_in_progress().
     static int s_frames_in_progress;
     wxTimer m_timer;
@@ -859,6 +865,9 @@ public:
 
     void load_arrange_settings();
     ArrangeSettings& get_arrange_settings();
+    // Saves the current print mode's spacing, rotation and material rule to the app config under the
+    // keys the Arrange options panel writes, for settings changed outside the panel.
+    void store_arrange_settings();
 
     class SequentialPrintClearance
     {
@@ -1040,6 +1049,7 @@ public:
 
     const GLGizmosManager& get_gizmos_manager() const { return m_gizmos; }
     GLGizmosManager& get_gizmos_manager() { return m_gizmos; }
+    GLToolbar& get_main_toolbar() { return m_main_toolbar; }
 
     void bed_shape_changed();
 
@@ -1167,6 +1177,14 @@ public:
     bool has_mouse_capture() const;
 
     void render(bool only_init = false);
+    // Draws a full frame now and copies it, as presented (scene, toolpaths, toolbars and ImGui
+    // overlays), into `out` at the canvas's pixel size, after any extra frames a change asked for to
+    // settle. Used by automation screenshots. Fails with `err` when the canvas is hidden, not
+    // drawable, or already inside a frame (a dialog opened from one of its panels). UI thread.
+    bool render_and_capture(wxImage& out, std::string& err);
+    // How many frames this canvas has presented. While it stays the same, the frame on screen is the last
+    // one presented, so a recording can reuse its capture of it instead of drawing another.
+    uint64_t presented_frames() const { return m_presented_frames; }
     bool is_rendering_enabled()
     {
         return m_enable_render;
@@ -1261,6 +1279,9 @@ public:
     void reset_gcode_layers_times_cache() { m_gcode_layers_times_cache.clear(); }
     void set_volumes_z_range(const std::array<double, 2>& range) { m_volumes.set_range(range[0] - 1e-6, range[1] + 1e-6); }
     size_t get_gcode_extruders_count() { return m_gcode_viewer.get_extruders_count(); }
+    // Hands the layer slider's tick edits, if any, to the plater (EVT_CUSTOMEVT_TICKSCHANGED), which writes
+    // them into the plate's custom G-codes. Each Preview frame calls it; so does MCP after editing ticks.
+    void send_layer_ticks_changes();
 
     std::vector<int> load_object(const ModelObject& model_object, int obj_idx, std::vector<int> instance_idxs);
     std::vector<int> load_object(const Model& model, int obj_idx);
@@ -1303,6 +1324,11 @@ public:
     void on_set_color_timer(wxTimerEvent& evt);
     void on_fps_overlay_timer(wxTimerEvent& evt);
     void on_mouse(wxMouseEvent& evt);
+    // A click on a plate or one of its icons, by its bed picking id, as on_mouse() does it for the one
+    // under the pointer (MCP calls it for an icon it names): a left click selects the plate or runs the
+    // icon; a right click selects the plate, then opens the plate menu unless the icon opened its own.
+    // `logical_pos` is where the plate menu opens. The caller checks what on_mouse() checks first.
+    void click_plate(int picking_id, bool right_click, const Vec2d& logical_pos);
     void on_gesture(wxGestureEvent& evt);
     void on_paint(wxPaintEvent& evt);
     void on_set_focus(wxFocusEvent& evt);
@@ -1485,6 +1511,9 @@ private:
 
     void _update_slice_error_status();
 
+    // Picks the selected object for the variable layer height actions; false when none is selected.
+    bool _select_layers_editing_object();
+
     void _switch_toolbars_icon_filename();
     bool _init_toolbars();
     bool _init_main_toolbar();
@@ -1579,6 +1608,8 @@ private:
     // Realistic view: binds, or unbinds, the shadow map the toolpaths read on texture unit 4. False without a map.
     bool _bind_gcode_shadow_map(bool bind) const;
     void _render_gcode_overlay(int canvas_width, int canvas_height);
+    // Hands the layers and moves sliders' positions to the toolpaths. Returns whether either slider had moved.
+    bool _apply_gcode_sliders();
     //BBS: render a plane for assemble
     void _render_plane() const;
     void _render_selection();

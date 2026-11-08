@@ -130,6 +130,12 @@ set(SLIC3R_GUI_SOURCES
     GUI/PluginsDialog.hpp
     GUI/Shortcuts.cpp
     GUI/Shortcuts.hpp
+    GUI/RecordingDialog.cpp
+    GUI/RecordingDialog.hpp
+    GUI/RecordingIndicator.cpp
+    GUI/RecordingIndicator.hpp
+    GUI/ScriptRunnerDialog.cpp
+    GUI/ScriptRunnerDialog.hpp
     GUI/SpeedDialDialog.cpp
     GUI/SpeedDialDialog.hpp
     GUI/ColorPickerDialog.cpp
@@ -138,6 +144,82 @@ set(SLIC3R_GUI_SOURCES
     GUI/ActionRegistry.hpp
     GUI/NativeCommands.cpp
     GUI/NativeCommands.hpp
+    GUI/SyntheticInput.cpp
+    GUI/SyntheticInput.hpp
+    GUI/Mcp/CanvasTarget.cpp
+    GUI/Mcp/CanvasTarget.hpp
+    GUI/Mcp/JobRegistry.cpp
+    GUI/Mcp/JobRegistry.hpp
+    GUI/Mcp/McpCore.cpp
+    GUI/Mcp/McpCore.hpp
+    GUI/Mcp/McpHttpServer.cpp
+    GUI/Mcp/McpHttpServer.hpp
+    GUI/Mcp/McpJournal.cpp
+    GUI/Mcp/McpJournal.hpp
+    GUI/Mcp/McpOperations.cpp
+    GUI/Mcp/McpOperations.hpp
+    GUI/Mcp/McpProtocol.cpp
+    GUI/Mcp/McpProtocol.hpp
+    GUI/Mcp/McpRecorder.cpp
+    GUI/Mcp/McpRecorder.hpp
+    GUI/Mcp/McpOptions.hpp
+    GUI/Mcp/McpScript.cpp
+    GUI/Mcp/McpScript.hpp
+    GUI/Mcp/McpScriptRun.cpp
+    GUI/Mcp/McpScriptRun.hpp
+    GUI/Mcp/McpScriptSummary.cpp
+    GUI/Mcp/McpScriptSummary.hpp
+    GUI/Mcp/McpService.cpp
+    GUI/Mcp/McpService.hpp
+    GUI/Mcp/McpServicePtr.hpp
+    GUI/Mcp/McpSetup.cpp
+    GUI/Mcp/McpSetup.hpp
+    GUI/Mcp/McpStdioBridge.cpp
+    GUI/Mcp/McpStdioBridge.hpp
+    GUI/Mcp/McpToken.cpp
+    GUI/Mcp/McpToken.hpp
+    GUI/Mcp/McpTools.hpp
+    GUI/Mcp/McpPaths.cpp
+    GUI/Mcp/McpPaths.hpp
+    GUI/Mcp/McpPluginCaller.cpp
+    GUI/Mcp/McpToolsActions.cpp
+    GUI/Mcp/McpToolsApi.cpp
+    GUI/Mcp/McpToolsApp.cpp
+    GUI/Mcp/McpToolsCommon.cpp
+    GUI/Mcp/McpToolsConfig.cpp
+    GUI/Mcp/McpToolsLayers.cpp
+    GUI/Mcp/McpToolsProject.cpp
+    GUI/Mcp/McpToolsPython.cpp
+    GUI/Mcp/McpToolsRecord.cpp
+    GUI/Mcp/McpToolsScene.cpp
+    GUI/Mcp/McpToolsScript.cpp
+    GUI/Mcp/McpToolsUi.cpp
+    GUI/Mcp/McpToolsView.cpp
+    GUI/Mcp/ScreenCapture.cpp
+    GUI/Mcp/ScreenCapture.hpp
+    GUI/Mcp/McpTypes.hpp
+    GUI/Mcp/PythonScriptsDialog.cpp
+    GUI/Mcp/PythonScriptsDialog.hpp
+    GUI/Mcp/MkvWriter.cpp
+    GUI/Mcp/MkvWriter.hpp
+    GUI/Mcp/ModalTracker.cpp
+    GUI/Mcp/ModalTracker.hpp
+    GUI/Mcp/RecordingSettings.cpp
+    GUI/Mcp/RecordingSettings.hpp
+    GUI/Mcp/RecordingSink.cpp
+    GUI/Mcp/RecordingSink.hpp
+    GUI/Mcp/UiInspector.cpp
+    GUI/Mcp/UiInspector.hpp
+    GUI/Mcp/UiInvoker.cpp
+    GUI/Mcp/UiInvoker.hpp
+    GUI/Mcp/UiRefs.cpp
+    GUI/Mcp/UiRefs.hpp
+    GUI/Mcp/VideoEncode.cpp
+    GUI/Mcp/VideoEncode.hpp
+    GUI/Mcp/VideoOverlay.cpp
+    GUI/Mcp/VideoOverlay.hpp
+    GUI/Mcp/WebPages.cpp
+    GUI/Mcp/WebPages.hpp
     GUI/PluginsConfigDialog.cpp
     GUI/PluginsConfigDialog.hpp
     GUI/ProcessRunner.cpp
@@ -685,6 +767,12 @@ set(SLIC3R_GUI_SOURCES
     plugin/PythonPluginBridge.cpp
     plugin/PythonPluginBridge.hpp
     plugin/PythonPluginInterface.hpp
+    plugin/PluginOperations.cpp
+    plugin/PluginOperations.hpp
+    plugin/PythonRunScope.cpp
+    plugin/PythonRunScope.hpp
+    plugin/PythonScriptRunner.cpp
+    plugin/PythonScriptRunner.hpp
     plugin/PyPluginPackage.hpp
     plugin/PluginBindingUtils.hpp
     plugin/host/PluginHost.cpp
@@ -697,6 +785,8 @@ set(SLIC3R_GUI_SOURCES
     plugin/host/PluginHostModel.cpp
     plugin/host/PluginHostPresets.cpp
     plugin/host/PluginHostSlicing.cpp
+    plugin/host/PluginHostTools.cpp
+    plugin/host/PluginHostTools.hpp
     plugin/host/PluginHostUi.cpp
     plugin/host/PluginHostUi.hpp
     plugin/host/PluginPages.cpp
@@ -879,6 +969,7 @@ if (SLIC3R_CAD)
         GUI/CAD/SketchInlineEditor.hpp
         GUI/CAD/McpControl.cpp
         GUI/CAD/McpControl.hpp
+        GUI/Mcp/McpToolsCad.cpp
     )
 endif ()
 
@@ -892,6 +983,7 @@ if (WIN32)
             GUI/dark_mode/UAHMenuBar.hpp
             GUI/dark_mode.hpp
             GUI/dark_mode.cpp
+            GUI/Mcp/ScreenCapture_win.cpp
         )
 endif ()
 
@@ -909,6 +1001,7 @@ if (APPLE)
             GUI/GUI_UtilsMac.mm
             GUI/MacIME.mm
             GUI/MacIME.hpp
+            GUI/Mcp/ScreenCapture_mac.mm
             GUI/Accessibility/AccessibilityMac.mm
             GUI/Accessibility/AccessibilityMac.h
         )
@@ -946,7 +1039,8 @@ target_include_directories(libslic3r_gui PRIVATE Utils ${CMAKE_CURRENT_BINARY_DI
 
 if (WIN32)
     target_include_directories(libslic3r_gui SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../deps/WebView2/include)
-    target_link_libraries(libslic3r_gui Advapi32)
+    # d3d11, dwmapi and runtimeobject: MCP window captures through Windows Graphics Capture.
+    target_link_libraries(libslic3r_gui Advapi32 d3d11 dwmapi runtimeobject)
 endif()
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SLIC3R_GUI_SOURCES})
@@ -973,6 +1067,11 @@ else()
 endif()
 
 target_link_libraries(libslic3r_gui libslic3r cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto LibDataChannel::LibDataChannel noise::noise pybind11::embed)
+
+# MCP recordings encode their frames with libjpeg directly. libslic3r links it privately, and imported
+# targets are scoped to the directory that found them.
+find_package(JPEG REQUIRED)
+target_link_libraries(libslic3r_gui JPEG::JPEG)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Linux finds wxWidgets in module mode, whose include dirs and definitions
@@ -1004,6 +1103,8 @@ elseif (APPLE)
     else()
         target_link_libraries(libslic3r_gui ${DISKARBITRATION_LIBRARY} "-framework Security")
     endif()
+    # MCP window captures (ScreenCapture_mac.mm); weak, since macOS before 12.3 has no ScreenCaptureKit.
+    target_link_libraries(libslic3r_gui "-weak_framework ScreenCaptureKit")
 endif()
 
 if (SLIC3R_STATIC)
