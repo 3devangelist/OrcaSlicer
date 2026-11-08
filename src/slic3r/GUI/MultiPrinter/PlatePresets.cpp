@@ -201,12 +201,107 @@ void on_plate_selected(Plater& plater, PartPlate* plate)
 
 bool is_swapping_presets() { return registry().swapping; }
 
+namespace {
+
+struct PlateClipboard
+{
+    bool               has      = false;
+    DynamicPrintConfig plate_config;      // plate options and process overrides
+    bool               has_set  = false;  // false: the copied plate used the project's set
+    PresetSnapshot     set;
+};
+
+PlateClipboard& clipboard()
+{
+    static PlateClipboard c;
+    return c;
+}
+
+// The set stored for `plate`, up to date with the bundle when it is the active one.
+const PresetSnapshot* stored_set(const PartPlate* plate)
+{
+    Registry& r = registry();
+    const auto it = r.plate_sets.find(plate);
+    if (it == r.plate_sets.end())
+        return nullptr;
+    if (r.active == plate)
+        it->second = capture_presets(*wxGetApp().preset_bundle);
+    return &it->second;
+}
+
+void after_plate_settings_changed(Plater& plater, PartPlate* plate)
+{
+    plate->update_slice_result_valid_state(false);
+    plater.update();
+}
+
+} // namespace
+
+void on_plate_added(Plater& plater, PartPlate* source, PartPlate* added)
+{
+    if (source == nullptr || added == nullptr || source == added || !plate_process_settings_enabled())
+        return;
+    prune(plater);
+    *added->config() = *source->config();
+    Registry& r = registry();
+    if (const PresetSnapshot* set = stored_set(source)) {
+        r.plate_sets[added] = *set;
+        // The new plate is selected next without a swap: the bundle already holds this same set.
+        if (r.active == source)
+            r.active = added;
+    }
+}
+
+void copy_plate_settings(Plater& plater, PartPlate* plate)
+{
+    if (plate == nullptr)
+        return;
+    prune(plater);
+    PlateClipboard& c = clipboard();
+    c.has          = true;
+    c.plate_config = *plate->config();
+    const PresetSnapshot* set = stored_set(plate);
+    c.has_set = set != nullptr;
+    c.set     = set != nullptr ? *set : PresetSnapshot{};
+}
+
+bool can_paste_plate_settings() { return clipboard().has; }
+
+void paste_plate_settings(Plater& plater, PartPlate* plate)
+{
+    const PlateClipboard& c = clipboard();
+    if (plate == nullptr || !c.has || !plate_process_settings_enabled())
+        return;
+    prune(plater);
+    plater.take_snapshot("Paste plate settings");
+    *plate->config() = c.plate_config;
+    Registry& r = registry();
+    if (c.has_set) {
+        r.plate_sets[plate] = c.set;
+        const bool is_current = plater.get_partplate_list().get_curr_plate() == plate;
+        if (is_current) {
+            // Keep what was edited in the set that leaves the bundle, then show the pasted one.
+            if (r.active != plate)
+                active_set_storage() = capture_presets(*wxGetApp().preset_bundle);
+            r.active   = plate;
+            r.swapping = true;
+            load_into_app(plater, c.set);
+            r.swapping = false;
+        }
+    } else {
+        set_plate_own_presets(plater, plate, false);
+    }
+    after_plate_settings_changed(plater, plate);
+}
+
 void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent)
 {
     const wxString use_own     = _L("Use own printer, process and filaments");
     const wxString use_project = _L("Use the project's printer, process and filaments");
-    // The plate menu is reused: drop the item added for the previous plate.
-    for (const wxString& name : {use_own, use_project})
+    const wxString copy        = _L("Copy plate settings");
+    const wxString paste       = _L("Paste plate settings");
+    // The plate menu is reused: drop the items added for the previous plate.
+    for (const wxString& name : {use_own, use_project, copy, paste})
         if (const int id = menu->FindItem(name); id != wxNOT_FOUND)
             menu->Destroy(id);
     if (!plate_process_settings_enabled())
@@ -220,6 +315,12 @@ void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent)
         menu, wxID_ANY, own ? use_project : use_own, "",
         [plate, own](wxCommandEvent&) { set_plate_own_presets(*wxGetApp().plater(), plate, !own); }, "", nullptr,
         []() { return true; }, parent, int(pos));
+    append_menu_item(
+        menu, wxID_ANY, copy, "", [plate](wxCommandEvent&) { copy_plate_settings(*wxGetApp().plater(), plate); }, "",
+        nullptr, []() { return true; }, parent, int(pos) + 1);
+    append_menu_item(
+        menu, wxID_ANY, paste, "", [plate](wxCommandEvent&) { paste_plate_settings(*wxGetApp().plater(), plate); }, "",
+        nullptr, []() { return can_paste_plate_settings(); }, parent, int(pos) + 2);
 }
 
 namespace {
