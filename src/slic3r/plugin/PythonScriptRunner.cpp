@@ -256,7 +256,8 @@ def _origin(frame):
 # comes first. A submit that raises after creating its item gave the caller no future, though the item may be queued
 # with no worker to run it: it is cancelled, so it never runs and is uncounted. The callback and that hand-off are in
 # place before the count, so no count is ever left without them.
-_pools = weakref.WeakSet()
+)CAPTURE" // [fork-test] split: MSVC C2026 limits one string literal to 16380 bytes; adjacent literals are joined
+R"CAPTURE(_pools = weakref.WeakSet()
 _original_pool_init = concurrent.futures.thread.ThreadPoolExecutor.__init__
 _original_submit = concurrent.futures.thread.ThreadPoolExecutor.submit
 _original_item_init = concurrent.futures.thread._WorkItem.__init__
