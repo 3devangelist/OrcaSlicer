@@ -7050,7 +7050,7 @@ void PartPlateList::update_all_plates_pos_and_size(bool adjust_position, bool wi
 		plate->set_pos_and_size(origin1, width, depth, height, adjust_position, do_clear);
 
 		// set default wipe pos when switch plate
-        if (switch_plate_type && m_plater && plate_changed/* && plate->get_used_extruders().size() <= 0*/) {
+        if (switch_plate_type && m_plater && plate_changed && !MultiPrinterGui::layout_is_temporary()/* && plate->get_used_extruders().size() <= 0*/) {
 			set_default_wipe_tower_pos_for_plate(i);
 		}
 	}
