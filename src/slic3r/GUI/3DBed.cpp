@@ -699,7 +699,7 @@ void Bed3D::update_bed_triangles()
 
 void Bed3D::render_model(const Transform3d& view_matrix, const Transform3d& projection_matrix)
 {
-    if (m_model_filename.empty())
+    if (m_model_filename.empty() || m_model_drawn_elsewhere) // [multi-printer]
         return;
 
     if (m_model.get_filename() != m_model_filename && m_model.init_from_file(m_model_filename)) {
