@@ -226,6 +226,26 @@ bool is_swapping_presets() { return registry().swapping; }
 
 bool objects_follow_plates() { return plate_process_settings_enabled(); }
 
+const DynamicPrintConfig& plate_printer_config(const PartPlate* plate, std::string& preset_name)
+{
+    const Registry&     r      = registry();
+    const PresetBundle& bundle = *wxGetApp().preset_bundle;
+    const auto          it     = plate != nullptr ? r.plate_sets.find(plate) : r.plate_sets.end();
+    const PresetSnapshot* set  = nullptr;
+    if (plate != nullptr && r.active != plate) {
+        if (it != r.plate_sets.end())
+            set = &it->second;
+        else if (r.active != nullptr && r.has_project_set)
+            set = &r.project_set; // no set of its own while another plate's set is loaded
+    }
+    if (set == nullptr) {
+        preset_name = bundle.printers.get_selected_preset_name();
+        return bundle.printers.get_edited_preset().config;
+    }
+    preset_name = set->printers.selected;
+    return set->printers.edited;
+}
+
 namespace {
 
 struct PlateClipboard
@@ -438,6 +458,7 @@ std::map<int, PresetSnapshot> sets_from_json(const std::string& json)
 
 struct ProjectSaveScope::Impl
 {
+    Plater*                                               plater = nullptr;
     std::unique_ptr<PresetBundle::SelectionExportBlocker> no_export;
     const PartPlate*                                      swapped_out = nullptr; // the plate whose set is put back
 };
@@ -449,6 +470,11 @@ ProjectSaveScope::ProjectSaveScope(Plater& plater)
         return;
     prune(plater);
     Registry& r = registry();
+    m_impl         = new Impl;
+    m_impl->plater = &plater;
+    // Objects are written where upstream's grid puts their plates, so upstream OrcaSlicer opens the
+    // file with every object on its plate (PlateLayout.cpp).
+    suspend_plate_layout(plater, true);
     if (r.plate_sets.empty()) {
         plater.model().multi_printer_plates.clear();
         return;
@@ -467,8 +493,7 @@ ProjectSaveScope::ProjectSaveScope(Plater& plater)
         r.has_project_set = true;
     }
     if (r.active != nullptr && r.active != first && r.has_project_set) {
-        m_impl             = new Impl;
-        m_impl->no_export  = std::make_unique<PresetBundle::SelectionExportBlocker>(bundle);
+        m_impl->no_export   = std::make_unique<PresetBundle::SelectionExportBlocker>(bundle);
         m_impl->swapped_out = r.active;
         restore_presets(bundle, r.project_set);
     }
@@ -479,8 +504,10 @@ ProjectSaveScope::~ProjectSaveScope()
     if (m_impl == nullptr)
         return;
     Registry& r = registry();
-    if (const auto it = r.plate_sets.find(m_impl->swapped_out); it != r.plate_sets.end())
-        restore_presets(*wxGetApp().preset_bundle, it->second);
+    if (m_impl->swapped_out != nullptr)
+        if (const auto it = r.plate_sets.find(m_impl->swapped_out); it != r.plate_sets.end())
+            restore_presets(*wxGetApp().preset_bundle, it->second);
+    suspend_plate_layout(*m_impl->plater, false);
     delete m_impl;
 }
 
@@ -498,8 +525,11 @@ void on_project_loaded(Plater& plater, const std::string& plates_json)
     // which may still refresh the presets, has finished.
     wxGetApp().CallAfter([]() {
         Plater* p = wxGetApp().plater();
-        if (p != nullptr)
-            on_plate_selected(*p, p->get_partplate_list().get_curr_plate());
+        if (p == nullptr)
+            return;
+        on_plate_selected(*p, p->get_partplate_list().get_curr_plate());
+        // The file holds upstream's grid: lay the plates out in rows per printer, objects moving along.
+        p->set_bed_shape();
     });
 }
 

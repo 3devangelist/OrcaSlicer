@@ -66,6 +66,15 @@ bool is_swapping_presets();
 // bed), so that they stay on the plate they were on. Upstream leaves them where they are.
 bool objects_follow_plates();
 
+// The printer settings a plate uses and their preset name: the PresetBundle's when the plate's set is the
+// one loaded in it (or `plate` is nullptr: a plate about to be added from the current one), otherwise the
+// plate's stored set.
+const DynamicPrintConfig& plate_printer_config(const PartPlate* plate, std::string& preset_name);
+
+// Called by ProjectSaveScope: lays the plates out the upstream way while a project is written (`true`)
+// and back (`false`). Defined in PlateLayout.cpp.
+void suspend_plate_layout(Plater& plater, bool suspend);
+
 // Adds (or refreshes) the plate menu items: give the selected plate its own printer, process and
 // filaments (or take them back), and copy / paste plate settings. Does nothing when the feature is off.
 void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent);

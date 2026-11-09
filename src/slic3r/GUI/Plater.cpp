@@ -314,6 +314,7 @@
 #include "DeviceCore/DevDefs.h"
 #include "BBLTopbar.hpp"
 #include "MultiPrinter/PlatePresets.hpp" // [multi-printer]
+#include "MultiPrinter/PlateLayout.hpp"  // [multi-printer]
 
 namespace fs = boost::filesystem;
 using namespace nlohmann;
@@ -15347,6 +15348,8 @@ void Plater::priv::set_bed_shape(const Pointfs       &shape,
     if (!new_shape && partplate_list.get_logo_texture_filename() != custom_texture) {
         partplate_list.update_logo_texture_filename(custom_texture);
     }
+    const bool plate_layout_changed = MultiPrinterGui::layout_changed(partplate_list); // [multi-printer] one row per printer
+    new_shape |= plate_layout_changed;
     if (new_shape) {
         if (view3D) view3D->bed_shape_changed();
         if (preview) preview->bed_shape_changed();
@@ -15359,6 +15362,7 @@ void Plater::priv::set_bed_shape(const Pointfs       &shape,
 
         partplate_list.reset_size(max.x() - min.x() - Bed3D::Axes::DefaultTipRadius, max.y() - min.y() - Bed3D::Axes::DefaultTipRadius, z,
                                   true, false, MultiPrinterGui::objects_follow_plates()); // [multi-printer] objects stay on their plate
+        if (plate_layout_changed) partplate_list.update_all_plates_pos_and_size(true, false, true); // [multi-printer] rows changed
         partplate_list.set_shapes(shape, exclude_areas, wrapping_exclude_areas, extruder_areas, extruder_heights, custom_texture, height_to_lid, height_to_rod);
         // [multi-printer] reset_size assigned objects to plates before the plates got their new shapes
         if (MultiPrinterGui::objects_follow_plates()) partplate_list.reload_all_objects();
