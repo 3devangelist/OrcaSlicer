@@ -12,6 +12,7 @@
 #include "slic3r/GUI/DeviceCore/DevManager.h"
 #include "slic3r/GUI/DeviceManager.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
+#include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/I18N.hpp"
@@ -382,7 +383,7 @@ void refresh_current_plate_machine(Plater& plater)
     if (current.empty()) {
         const std::vector<MachineObject*> machines = my_machines_of_model(model);
         if (machines.size() == 1) // the only machine of this model: no need to ask
-            set_plate_machine(plater, plate, {machines.front()->dev_id, machines.front()->get_dev_name(), model});
+            set_plate_machine(plater, plate, {machines.front()->get_dev_id(), machines.front()->get_dev_name(), model});
     }
 }
 
@@ -397,7 +398,7 @@ void on_machine_selected_by_user(const std::string& dev_id)
     MachineObject* obj = dev->get_my_machine(dev_id);
     if (obj == nullptr || obj->printer_type != current_printer_model())
         return; // a machine of another model does not print this plate
-    set_plate_machine(*plater, plater->get_partplate_list().get_curr_plate(), {obj->dev_id, obj->get_dev_name(), obj->printer_type});
+    set_plate_machine(*plater, plater->get_partplate_list().get_curr_plate(), {obj->get_dev_id(), obj->get_dev_name(), obj->printer_type});
 }
 
 bool ensure_plate_machine_selected(Plater& plater, bool ask)
@@ -408,7 +409,7 @@ bool ensure_plate_machine_selected(Plater& plater, bool ask)
     DeviceManager*       dev     = wxGetApp().getDeviceManager();
     if (machine.empty() || dev == nullptr)
         return true;
-    if (MachineObject* selected = dev->get_selected_machine(); selected != nullptr && selected->dev_id == machine.id)
+    if (MachineObject* selected = dev->get_selected_machine(); selected != nullptr && selected->get_dev_id() == machine.id)
         return true;
     const wxString name = from_u8(machine.name);
     if (dev->get_my_machine_list(dev->get_current_printer_agent_id()).count(machine.id) == 0) {
@@ -436,7 +437,7 @@ bool ensure_plate_machine_selected(Plater& plater, bool ask)
     const auto start = std::chrono::steady_clock::now();
     for (;;) {
         MachineObject* obj = dev->get_selected_machine();
-        if (obj != nullptr && obj->dev_id == machine.id && obj->is_info_ready(false))
+        if (obj != nullptr && obj->get_dev_id() == machine.id && obj->is_info_ready(false))
             return true;
         if (std::chrono::steady_clock::now() - start > std::chrono::seconds(45)) {
             progress.Hide();
@@ -475,7 +476,7 @@ bool print_plates_one_by_one(Plater& plater, const std::function<void(int)>& pri
     wxString list;
     for (const Target& t : targets)
         list += wxString::Format(_L("Plate %d"), t.plate + 1) + wxString::FromUTF8(" \xE2\x86\x92 ") + t.label +
-                (t.sliced ? wxString() : " (" + _L("not sliced: skipped") + ")") + "\n";
+                (t.sliced ? wxString() : wxString(" (") + _L("not sliced: skipped") + ")") + "\n";
     MessageDialog confirm(&plater, _L("The plates go to different machines. Each plate is sent to its own, one after the other:") + "\n\n" + list,
                           _L("Print all plates"), wxOK | wxCANCEL | wxICON_QUESTION);
     if (confirm.ShowModal() != wxID_OK)
@@ -688,12 +689,12 @@ void choose_plate_machine(Plater& plater, PartPlate* plate)
     names.Add(_L("No machine"));
     int selection = 0;
     for (size_t i = 0; i < machines.size(); ++i) {
-        names.Add(from_u8(machines[i]->get_dev_name()) + (machines[i]->is_online() ? wxString() : " (" + _L("offline") + ")"));
-        if (machines[i]->dev_id == current.id)
+        names.Add(from_u8(machines[i]->get_dev_name()) + (machines[i]->is_online() ? wxString() : wxString(" (") + _L("offline") + ")"));
+        if (machines[i]->get_dev_id() == current.id)
             selection = int(i) + 1;
     }
     if (machines.empty() && !current.empty()) { // keep showing a machine that is not listed now
-        names.Add(from_u8(current.name) + " (" + _L("not available") + ")");
+        names.Add(from_u8(current.name) + wxString(" (") + _L("not available") + ")");
         selection = 1;
     }
     wxSingleChoiceDialog dlg(&plater,
@@ -707,7 +708,7 @@ void choose_plate_machine(Plater& plater, PartPlate* plate)
     if (choice == 0)
         set_plate_machine(plater, plate, {});
     else if (choice - 1 < int(machines.size()))
-        set_plate_machine(plater, plate, {machines[choice - 1]->dev_id, machines[choice - 1]->get_dev_name(), model});
+        set_plate_machine(plater, plate, {machines[choice - 1]->get_dev_id(), machines[choice - 1]->get_dev_name(), model});
 }
 
 namespace {
