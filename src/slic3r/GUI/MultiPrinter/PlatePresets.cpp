@@ -485,7 +485,7 @@ struct ProjectSaveScope::Impl
     const PartPlate*                                      swapped_out = nullptr; // the plate whose set is put back
 };
 
-ProjectSaveScope::ProjectSaveScope(Plater& plater, bool backup)
+ProjectSaveScope::ProjectSaveScope(Plater& plater, bool keep_rows)
 {
     // Off: leave Model::multi_printer_plates as loaded, so a project's sets survive a save.
     if (!plate_process_settings_enabled())
@@ -495,10 +495,10 @@ ProjectSaveScope::ProjectSaveScope(Plater& plater, bool backup)
     m_impl         = new Impl;
     m_impl->plater = &plater;
     // Objects are written where upstream's grid puts their plates, so upstream OrcaSlicer opens the
-    // file with every object on its plate (PlateLayout.cpp). Not for backups: no plate moves every few
-    // seconds while the user works.
-    const bool rows_layout = backup && layout_active(plater.get_partplate_list());
-    if (!backup)
+    // file with every object on its plate (PlateLayout.cpp). Not for backups (no plate moves every few
+    // seconds while the user works) nor sliced files (moving objects drops their slicing results).
+    const bool rows_layout = keep_rows && layout_active(plater.get_partplate_list());
+    if (!keep_rows)
         suspend_plate_layout(plater, true);
     if (r.plate_sets.empty()) {
         plater.model().multi_printer_plates.clear();

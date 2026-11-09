@@ -96,12 +96,13 @@ void paste_plate_settings(Plater& plater, PartPlate* plate);
 // While a project file is written: the PresetBundle holds the project's set (so project_settings.config
 // is what plates without their own set use, and what upstream OrcaSlicer opens), and
 // Model::multi_printer_plates holds the plates' own sets as JSON. The plate's set is back afterwards.
-// Plates in rows per printer are laid out on upstream's grid while the file is written, except for the
-// automatic backups (every few seconds, read back only by this fork): those keep the rows and say so.
+// Plates in rows per printer are laid out on upstream's grid while the file is written, except when
+// `keep_rows`: automatic backups (every few seconds) and sliced files (moving objects would drop their
+// slicing results). Those keep the rows and say so in the JSON.
 class ProjectSaveScope
 {
 public:
-    ProjectSaveScope(Plater& plater, bool backup);
+    ProjectSaveScope(Plater& plater, bool keep_rows);
     ~ProjectSaveScope();
     ProjectSaveScope(const ProjectSaveScope&)            = delete;
     ProjectSaveScope& operator=(const ProjectSaveScope&) = delete;
