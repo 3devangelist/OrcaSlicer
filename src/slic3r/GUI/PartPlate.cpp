@@ -2071,7 +2071,8 @@ void PartPlate::update_exclusion_volume_preview_models()
         return;
     m_exclusion_volume_preview_dirty = false;
 
-    const DynamicPrintConfig *config = m_plater != nullptr ? m_plater->config() : nullptr;
+    // [multi-printer] the no-print zones of this plate's printer, not of the selected plate's
+    const DynamicPrintConfig *config = MultiPrinterGui::plate_checks_config(this, m_plater != nullptr ? m_plater->config() : nullptr);
     if (config == nullptr) {
         m_exclusion_volume_preview_cache_key.clear();
         m_exclusion_volume_floor_triangles.reset();
@@ -4491,7 +4492,8 @@ bool PartPlate::check_outside(int obj_id, int instance_id, BoundingBoxf3* boundi
 	if (plate_box.contains(instance_box))
 	{
         outside = false;
-        const DynamicPrintConfig *config = m_plater != nullptr ? m_plater->config() : nullptr;
+        // [multi-printer] the no-print zones of this plate's printer, not of the selected plate's
+        const DynamicPrintConfig *config = MultiPrinterGui::plate_checks_config(this, m_plater != nullptr ? m_plater->config() : nullptr);
         bool checked_config_regions = false;
         if (config != nullptr) {
             const std::vector<std::vector<BedExcludeRegion>> regions_by_extruder =

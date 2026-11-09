@@ -92,6 +92,11 @@ bool plate_layout_enabled();
 // plate's stored set.
 const DynamicPrintConfig& plate_printer_config(const PartPlate* plate, std::string& preset_name);
 
+// The printer settings a plate's own checks and drawings read (no-print zones, nozzle offsets, extruder
+// colours): the plate's printer when the feature is on, else `fallback` (upstream: the app's config,
+// which is the selected plate's printer for every plate).
+const DynamicPrintConfig* plate_checks_config(const PartPlate* plate, const DynamicPrintConfig* fallback);
+
 // The machine a plate prints on (nullptr plate: the plate about to be added from the current one).
 MachineBinding plate_machine(const PartPlate* plate);
 void           set_plate_machine(Plater& plater, PartPlate* plate, const MachineBinding& machine);

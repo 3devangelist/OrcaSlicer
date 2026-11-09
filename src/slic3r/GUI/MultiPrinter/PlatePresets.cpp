@@ -444,6 +444,14 @@ const DynamicPrintConfig& plate_printer_config(const PartPlate* plate, std::stri
     return set->printers.edited;
 }
 
+const DynamicPrintConfig* plate_checks_config(const PartPlate* plate, const DynamicPrintConfig* fallback)
+{
+    if (fallback == nullptr || plate == nullptr || !plate_process_settings_enabled() || wxGetApp().preset_bundle == nullptr)
+        return fallback;
+    std::string name;
+    return &plate_printer_config(plate, name);
+}
+
 // ---- The plate's physical machine ------------------------------------------------------------------
 
 namespace {
