@@ -15423,6 +15423,8 @@ void Plater::priv::set_bed_shape(const Pointfs       &shape,
         partplate_list.reset_size(max.x() - min.x() - Bed3D::Axes::DefaultTipRadius, max.y() - min.y() - Bed3D::Axes::DefaultTipRadius, z,
                                   true, false, MultiPrinterGui::objects_follow_plates()); // [multi-printer] objects stay on their plate
         partplate_list.set_shapes(shape, exclude_areas, wrapping_exclude_areas, extruder_areas, extruder_heights, custom_texture, height_to_lid, height_to_rod);
+        // [multi-printer] reset_size assigned objects to plates before the plates got their new shapes
+        if (MultiPrinterGui::objects_follow_plates()) partplate_list.reload_all_objects();
 
         Vec2d new_shape_position = partplate_list.get_current_shape_position();
         if (shape_position != new_shape_position)
