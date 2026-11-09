@@ -35,13 +35,21 @@ needs a restart). With it off, OrcaSlicer behaves as upstream.
 | New plate ("Add plate") copies the current plate: plate options, process overrides and its own set if any | `on_plate_added` in `PlatePresets.cpp`, hook in `Plater::add_plate` | MCP: plate 1 on Printer B "by object" → new plate is Printer B "by object" |
 | Plate right-click "Copy plate settings" / "Paste plate settings": everything, including the printer set | `copy_plate_settings` / `paste_plate_settings` in `PlatePresets.cpp` | MCP: paste plate 1 (B) onto a project-set plate → B; paste a project-set plate onto plate 1 → A |
 
-Not done yet: user presets used only by other plates are not embedded in the
-3MF (another computer needs them installed); arrange and fill bed still use
-one bed size and upstream's grid for all plates (wrong with rows per printer);
-the "outside the plate" check and the logo/texture follow the current plate's
-printer;
-"all plates" print/send actions with several printers; undo of set changes;
-a test of the filament clamp guard.
+| Physical machine per plate (owner's decision 2026-11-09: e.g. two H2C and one H2D, same preset, different filaments loaded): the set holds the machine (DeviceManager id, name, model) and what it had loaded (`filament_ams_list`). Auto-bound when the user has only one machine of the plate's model; right-click "Choose machine..."; a machine picked in the Device tab or print dialog binds the current plate. One row per machine; the machine's name is drawn on the plate and shown in the object list | `PlatePresets.*` (`MachineBinding`, `plate_machine`, `refresh_current_plate_machine`), hooks in `DevManager.cpp` (`OnSelectedMachineChanged`), `PartPlate.cpp` (name texture), `ObjectDataViewModel.cpp`, `PlateLayout.cpp` (row key) | Menu items checked over MCP; binding to real machines to be tested by the owner (the test data folder has no machines) |
+| Before syncing filaments, printing or sending a plate: when its machine is not the selected one, ask, switch and wait (progress dialog, cancellable) until it is connected; an unavailable machine only warns (owner's decision) | `ensure_plate_machine_selected`; hooks in `Sidebar::deal_btn_sync`, `on_action_print_plate`, `on_action_send_to_printer` | owner, with real machines |
+| "Print all" with several machines/printers: one "plate → machine" list to confirm, then each sliced plate is selected and sent with the usual dialog | `print_plates_one_by_one`, hook in `on_action_print_all` | owner, with real machines |
+| Quote summary in "Statistics of All Plates": by real filament (preset, type, colour, each plate's density and price), by machine, machine time, time until done with machines in parallel; the per-slot rows are hidden when they would mix materials | `PlateSummary.*`, two hooks in `GCodeViewer.cpp` | MCP: A1 mini / X2D / A1 mini → 2 machines, 3 filaments, 7h12m machine time, 5h57m in parallel |
+| Arrange / fill bed with rows: each plate's own origin; "arrange all" arranges the current plate only (with its bed) and says so | `PartPlateList` pre/post arrange, `ArrangeJob::prepare`, `FillBedJob` | MCP: arrange all on plate 2 (X2D) → only plate 2 arranged, notice shown |
+| The user presets a set uses travel in the plates' JSON; a computer without them gets them as project presets | `capture_presets` / `restore_presets` (`user_presets`) | not tested on a second computer yet |
+| An object found on another plate takes that plate's closest filament (type first, then colour), with a notification (owner's decision 2026-11-08) | `remember_object_filaments` / `adapt_moved_objects` in `PlatePresets.cpp` | MCP: Benchy (PLA, A1 mini) → X2D plate with PETG + PLA Matte → filament 2 (PLA), notice shown |
+| Right-click "Paste special...": plate options, process settings, printer/process/filaments and/or machine | `paste_plate_settings_special` | menu checked over MCP |
+| Loading a plate's printer brings back upstream's per-printer filament memory; the plate's own list is put back | `load_into_app` | MCP: X2D plate keeps PETG in slot 1 after switching plates |
+
+Not done yet: undo (Ctrl+Z) of printer/set/machine changes (upstream's undo
+stack does not hold the plates' sets); the "outside the plate" check and the
+logo/texture follow the current plate's printer; a test of the filament clamp
+guard; tests with real machines (binding, switching, print all) and on a second
+computer (user presets); the 2.5 branch has the docs only.
 Selecting a plate re-slices it after a set swap, even when nothing changed.
 
 ## 1. The problem
