@@ -5,6 +5,7 @@
 #include "PlateLayout.hpp"
 #include "PlateSettings.hpp"
 
+#include "libslic3r/Color.hpp"
 #include "libslic3r/Model.hpp"
 #include "libslic3r/MultiPrinter/PlateOverrides.hpp"
 #include "libslic3r/Preset.hpp"
@@ -17,11 +18,13 @@
 #include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/I18N.hpp"
 #include "slic3r/GUI/MsgDialog.hpp"
+#include "slic3r/GUI/NotificationManager.hpp"
 #include "slic3r/GUI/ObjectDataViewModel.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/wxExtensions.hpp"
 
+#include <boost/format.hpp>
 #include <boost/log/trivial.hpp>
 #include <nlohmann/json.hpp>
 #include <wx/choicdlg.h>
@@ -155,11 +158,32 @@ PresetSnapshot capture_presets(const PresetBundle& bundle)
     snapshot.project_config      = bundle.project_config;
     snapshot.extruder_ams_counts = bundle.extruder_ams_counts;
     snapshot.filament_ams_list   = bundle.filament_ams_list;
+    // User presets travel with the project (another computer may not have them).
+    auto keep_user = [&snapshot](const PresetCollection& presets, const std::string& name, Preset::Type type) {
+        if (const Preset* preset = presets.find_preset(name, false); preset != nullptr && (preset->is_user() || preset->is_project_embedded))
+            snapshot.user_presets[name] = {int(type), preset->config};
+    };
+    keep_user(bundle.printers, snapshot.printers.selected, Preset::TYPE_PRINTER);
+    keep_user(bundle.prints, snapshot.prints.selected, Preset::TYPE_PRINT);
+    for (const std::string& name : snapshot.filament_presets)
+        keep_user(bundle.filaments, name, Preset::TYPE_FILAMENT);
     return snapshot;
 }
 
 bool restore_presets(PresetBundle& bundle, const PresetSnapshot& snapshot)
 {
+    // User presets this computer does not have: add them as project presets (like upstream does for the
+    // presets embedded in a 3MF), so the plate slices with the same settings.
+    for (const auto& [name, typed] : snapshot.user_presets) {
+        PresetCollection* presets = typed.first == Preset::TYPE_PRINTER ? static_cast<PresetCollection*>(&bundle.printers) :
+                                    typed.first == Preset::TYPE_PRINT   ? &bundle.prints :
+                                    typed.first == Preset::TYPE_FILAMENT ? &bundle.filaments : nullptr;
+        if (presets == nullptr || presets->find_preset(name, false) != nullptr)
+            continue;
+        Preset& added             = presets->load_preset("", name, typed.second, false);
+        added.is_project_embedded = true;
+        BOOST_LOG_TRIVIAL(info) << "[multi-printer] added the plate's preset '" << name << "' as a project preset";
+    }
     bool all_found = true;
     auto restore = [&all_found](PresetCollection& presets, const PresetSnapshot::Collection& saved) {
         if (!presets.select_preset_by_name(saved.selected, true)) {
@@ -225,6 +249,113 @@ void set_plate_own_presets(Plater& plater, PartPlate* plate, bool own)
     plate->update_slice_result_valid_state(false);
 }
 
+namespace {
+
+// ---- Objects moved to a plate with other filaments (owner's decision 2026-11-08) ---------------------
+// Each object remembers the plate it was on and the filament (type, colour) it used there. When it is
+// found on another plate, it takes that plate's closest filament (same type first, then nearest colour)
+// and a notification says so.
+
+struct FilamentLook
+{
+    std::string type, colour;
+};
+
+struct ObjectFilament
+{
+    const PartPlate* plate = nullptr;
+    FilamentLook     look;
+};
+
+std::map<size_t, ObjectFilament>& object_filaments() // ModelObject id -> where and what it printed with
+{
+    static std::map<size_t, ObjectFilament> m;
+    return m;
+}
+
+// A filament slot (1-based) of the set loaded in the bundle.
+FilamentLook slot_look(int slot)
+{
+    const PresetBundle& bundle = *wxGetApp().preset_bundle;
+    FilamentLook        look;
+    if (slot < 1 || size_t(slot) > bundle.filament_presets.size())
+        return look;
+    if (const Preset* preset = bundle.filaments.find_preset(bundle.filament_presets[slot - 1], false))
+        if (const auto* type = preset->config.option<ConfigOptionStrings>("filament_type"); type != nullptr && !type->values.empty())
+            look.type = type->values.front();
+    if (const auto* colour = bundle.project_config.option<ConfigOptionStrings>("filament_colour"); colour != nullptr && size_t(slot) <= colour->values.size())
+        look.colour = colour->values[slot - 1];
+    return look;
+}
+
+int object_slot(const ModelObject* object)
+{
+    const ConfigOption* extruder = object->config.option("extruder");
+    const int           slot     = extruder != nullptr ? extruder->getInt() : 0;
+    return slot > 0 ? slot : 1;
+}
+
+template<typename Fn> void for_objects_on(Plater& plater, const PartPlate* plate, Fn fn)
+{
+    ModelObjectPtrs& objects = plater.model().objects;
+    for (size_t i = 0; i < objects.size(); ++i)
+        if (const_cast<PartPlate*>(plate)->contain_instance(int(i), 0))
+            fn(int(i), objects[i]);
+}
+
+void remember_object_filaments(Plater& plater, const PartPlate* plate)
+{
+    if (plate == nullptr)
+        return;
+    for_objects_on(plater, plate, [plate](int, ModelObject* object) {
+        object_filaments()[object->id().id] = {plate, slot_look(object_slot(object))};
+    });
+}
+
+double colour_distance(const std::string& a, const std::string& b)
+{
+    ColorRGB ca, cb;
+    if (!decode_color(a, ca) || !decode_color(b, cb))
+        return 1.;
+    return std::sqrt(std::pow(ca.r() - cb.r(), 2) + std::pow(ca.g() - cb.g(), 2) + std::pow(ca.b() - cb.b(), 2));
+}
+
+void adapt_moved_objects(Plater& plater, const PartPlate* plate)
+{
+    const int slots = int(wxGetApp().preset_bundle->filament_presets.size());
+    if (plate == nullptr || slots < 1)
+        return;
+    for_objects_on(plater, plate, [&](int obj_idx, ModelObject* object) {
+        auto it = object_filaments().find(object->id().id);
+        if (it == object_filaments().end() || it->second.plate == plate || it->second.plate == nullptr)
+            return; // never seen elsewhere, or not moved
+        const FilamentLook was     = it->second.look;
+        const int          current = object_slot(object);
+        int                best    = current <= slots ? current : 1;
+        double             best_score = 1e9;
+        for (int slot = 1; slot <= slots; ++slot) {
+            const FilamentLook look  = slot_look(slot);
+            const double       score = (look.type == was.type ? 0. : 10.) + colour_distance(look.colour, was.colour);
+            if (score < best_score) {
+                best_score = score;
+                best       = slot;
+            }
+        }
+        it->second = {plate, slot_look(best)};
+        if (best == current)
+            return;
+        object->config.set("extruder", best);
+        plater.changed_object(obj_idx);
+        const FilamentLook now = slot_look(best);
+        plater.get_notification_manager()->push_notification(
+            NotificationType::CustomNotification, NotificationManager::NotificationLevel::RegularNotificationLevel,
+            (boost::format(_u8L("%1% is on plate %2% now: filament %3% (%4% %5%) became filament %6% (%7% %8%), the closest one there."))
+             % object->name % (plate->get_index() + 1) % current % was.type % was.colour % best % now.type % now.colour).str());
+    });
+}
+
+} // namespace
+
 void on_plate_selected(Plater& plater, PartPlate* plate)
 {
     if (plate == nullptr || !plate_process_settings_enabled())
@@ -236,11 +367,13 @@ void on_plate_selected(Plater& plater, PartPlate* plate)
     if (new_owner == r.active)
         return; // same set: nothing to swap
     r.swapping = true;
-    // Keep what was edited in the set that is leaving the bundle.
+    // Keep what was edited in the set that is leaving the bundle, and what its objects printed with.
     refresh_from_bundle(active_set_storage());
+    remember_object_filaments(plater, r.active);
     r.active = new_owner;
     load_into_app(plater, active_set_storage());
     r.swapping = false;
+    adapt_moved_objects(plater, plate);
     BOOST_LOG_TRIVIAL(info) << "[multi-printer] plate " << plate->get_index() << " uses "
                             << (new_owner ? "its own presets" : "the project's presets") << ", printer "
                             << wxGetApp().preset_bundle->printers.get_selected_preset_name();
@@ -761,9 +894,13 @@ std::string sets_to_json(const std::map<int, PresetSnapshot>& sets_by_plate_inde
         nlohmann::json loaded = nlohmann::json::object(); // what the machine had loaded, per tray
         for (const auto& [tray, config] : set.filament_ams_list)
             loaded[std::to_string(tray)] = config_to_json(config);
+        nlohmann::json user_presets = nlohmann::json::array();
+        for (const auto& [name, typed] : set.user_presets)
+            user_presets.push_back({{"name", name}, {"type", typed.first}, {"config", config_to_json(typed.second)}});
         plates.push_back({{"plate_index", index},
                           {"machine", {{"id", set.machine.id}, {"name", set.machine.name}, {"model", set.machine.model}}},
                           {"machine_filaments", loaded},
+                          {"user_presets", user_presets},
                           {"printer", set.printers.selected},
                           {"process", set.prints.selected},
                           {"filament", set.filaments.selected},
@@ -805,6 +942,11 @@ std::map<int, PresetSnapshot> sets_from_json(const std::string& json)
             const nlohmann::json& m = plate["machine"];
             set.machine             = {m.value("id", std::string()), m.value("name", std::string()), m.value("model", std::string())};
         }
+        if (plate.contains("user_presets") && plate["user_presets"].is_array())
+            for (const nlohmann::json& p : plate["user_presets"])
+                if (p.is_object() && p.contains("name") && p["name"].is_string() && p.contains("type") && p["type"].is_number_integer())
+                    set.user_presets[p["name"].get<std::string>()] = {p["type"].get<int>(),
+                                                                      config_from_json(p.value("config", nlohmann::json::object()))};
         if (plate.contains("machine_filaments") && plate["machine_filaments"].is_object())
             for (auto it = plate["machine_filaments"].begin(); it != plate["machine_filaments"].end(); ++it)
                 set.filament_ams_list[std::atoi(it.key().c_str())] = config_from_json(it.value());

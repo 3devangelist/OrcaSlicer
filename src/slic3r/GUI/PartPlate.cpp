@@ -7582,8 +7582,8 @@ bool PartPlateList::preprocess_arrange_polygon(int obj_index, int instance_index
 				arrange_polygon.bed_idx = i;
 				arrange_polygon.row = i / m_plate_cols;
 				arrange_polygon.col = i % m_plate_cols;
-				arrange_polygon.translation(X) -= scaled<double>(plate_stride_x() * arrange_polygon.col);
-				arrange_polygon.translation(Y) += scaled<double>(plate_stride_y() * arrange_polygon.row);
+				arrange_polygon.translation(X) -= scaled<double>(compute_shape_position(i, m_plate_cols).x()); // [multi-printer] the plate's own origin
+				arrange_polygon.translation(Y) -= scaled<double>(compute_shape_position(i, m_plate_cols).y());
 			}
 			else
 			{
@@ -7593,8 +7593,8 @@ bool PartPlateList::preprocess_arrange_polygon(int obj_index, int instance_index
 					arrange_polygon.bed_idx = i - lockplate_cnt;
 					arrange_polygon.row = i / m_plate_cols;
 					arrange_polygon.col = i % m_plate_cols;
-					arrange_polygon.translation(X) -= scaled<double>(plate_stride_x() * arrange_polygon.col);
-					arrange_polygon.translation(Y) += scaled<double>(plate_stride_y() * arrange_polygon.row);
+					arrange_polygon.translation(X) -= scaled<double>(compute_shape_position(i, m_plate_cols).x()); // [multi-printer] the plate's own origin
+					arrange_polygon.translation(Y) -= scaled<double>(compute_shape_position(i, m_plate_cols).y());
 				}
 			}
 			BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": obj_id %1% instance_id %2% already in plate %3%, locked %4%, row %5%, col %6%\n") % obj_index % instance_index % i % locked % arrange_polygon.row % arrange_polygon.col;
@@ -7631,8 +7631,8 @@ bool PartPlateList::preprocess_arrange_polygon_other_locked(int obj_index, int i
 				arrange_polygon.bed_idx = i;
 				arrange_polygon.row = i / m_plate_cols;
 				arrange_polygon.col = i % m_plate_cols;
-				arrange_polygon.translation(X) -= scaled<double>(plate_stride_x() * arrange_polygon.col);
-				arrange_polygon.translation(Y) += scaled<double>(plate_stride_y() * arrange_polygon.row);
+				arrange_polygon.translation(X) -= scaled<double>(compute_shape_position(i, m_plate_cols).x()); // [multi-printer] the plate's own origin
+				arrange_polygon.translation(Y) -= scaled<double>(compute_shape_position(i, m_plate_cols).y());
 				//BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": obj_id %1% instance_id %2% in plate %3%, locked %4%, row %5%, col %6%\n") % obj_index % instance_index % i % locked % arrange_polygon.row % arrange_polygon.col;
 				return locked;
 			}
@@ -7895,8 +7895,8 @@ void PartPlateList::postprocess_arrange_polygon(arrangement::ArrangePolygon& arr
 	{
 		arrange_polygon.row = arrange_polygon.bed_idx / m_plate_cols;
 		arrange_polygon.col = arrange_polygon.bed_idx % m_plate_cols;
-		arrange_polygon.translation(X) += scaled<double>(plate_stride_x() * arrange_polygon.col);
-		arrange_polygon.translation(Y) -= scaled<double>(plate_stride_y() * arrange_polygon.row);
+		arrange_polygon.translation(X) += scaled<double>(compute_shape_position(arrange_polygon.bed_idx, m_plate_cols).x()); // [multi-printer] the plate's own origin
+		arrange_polygon.translation(Y) += scaled<double>(compute_shape_position(arrange_polygon.bed_idx, m_plate_cols).y());
 	}
 
 	return;
