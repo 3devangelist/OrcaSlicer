@@ -6,19 +6,30 @@
 #include "PlateSettings.hpp"
 
 #include "libslic3r/Model.hpp"
+#include "libslic3r/MultiPrinter/PlateOverrides.hpp"
 #include "libslic3r/Preset.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "slic3r/GUI/DeviceCore/DevManager.h"
+#include "slic3r/GUI/DeviceManager.hpp"
+#include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/GUI_ObjectList.hpp"
 #include "slic3r/GUI/I18N.hpp"
+#include "slic3r/GUI/MsgDialog.hpp"
+#include "slic3r/GUI/ObjectDataViewModel.hpp"
 #include "slic3r/GUI/PartPlate.hpp"
 #include "slic3r/GUI/Plater.hpp"
 #include "slic3r/GUI/wxExtensions.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <nlohmann/json.hpp>
+#include <wx/choicdlg.h>
 #include <wx/menu.h>
+#include <wx/progdlg.h>
+#include <wx/utils.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <map>
 #include <memory>
@@ -91,6 +102,14 @@ void load_into_app(Plater& plater, const PresetSnapshot& snapshot)
     plater.update_project_dirty_from_presets();
 }
 
+// Updates a stored set with what is in the PresetBundle now; the plate's machine is not bundle data.
+void refresh_from_bundle(PresetSnapshot& set)
+{
+    const MachineBinding machine = set.machine;
+    set                          = capture_presets(*wxGetApp().preset_bundle);
+    set.machine                  = machine;
+}
+
 const PartPlate* owner_of(const PartPlate* plate)
 {
     const Registry& r = registry();
@@ -111,8 +130,8 @@ void give_every_plate_a_set(Plater& plater, const PartPlate* holder)
     if (!missing)
         return;
     const bool           holder_had_set = r.plate_sets.count(holder) != 0;
-    const PresetSnapshot now            = capture_presets(*wxGetApp().preset_bundle);
-    active_set_storage()                = now;
+    refresh_from_bundle(active_set_storage());
+    const PresetSnapshot now = active_set_storage(); // with the active set's machine
     for (int i = 0; i < plates.get_plate_count(); ++i)
         r.plate_sets.emplace(plates.get_plate(i), now); // keeps the sets plates already have
     if (r.active == nullptr && holder != nullptr && !holder_had_set)
@@ -134,6 +153,7 @@ PresetSnapshot capture_presets(const PresetBundle& bundle)
     snapshot.filament_presets    = bundle.filament_presets;
     snapshot.project_config      = bundle.project_config;
     snapshot.extruder_ams_counts = bundle.extruder_ams_counts;
+    snapshot.filament_ams_list   = bundle.filament_ams_list;
     return snapshot;
 }
 
@@ -158,6 +178,8 @@ bool restore_presets(PresetBundle& bundle, const PresetSnapshot& snapshot)
     bundle.filament_presets    = snapshot.filament_presets;
     bundle.project_config      = snapshot.project_config;
     bundle.extruder_ams_counts = snapshot.extruder_ams_counts;
+    // What the plate's machine had loaded: filament sync and the "match the printer" grouping use it.
+    bundle.filament_ams_list = snapshot.filament_ams_list;
     return all_found;
 }
 
@@ -179,12 +201,12 @@ void set_plate_own_presets(Plater& plater, PartPlate* plate, bool own)
     if (own) {
         // The plate starts with a copy of the set it uses now.
         if (plate_is_current) {
-            active_set_storage() = capture_presets(*wxGetApp().preset_bundle); // keep the project's set up to date
+            refresh_from_bundle(active_set_storage()); // keep the project's set up to date
             r.plate_sets[plate]  = capture_presets(*wxGetApp().preset_bundle);
             r.active             = plate;
         } else {
             if (r.active == nullptr)
-                active_set_storage() = capture_presets(*wxGetApp().preset_bundle);
+                refresh_from_bundle(active_set_storage());
             r.plate_sets[plate] = r.has_project_set ? r.project_set : capture_presets(*wxGetApp().preset_bundle);
         }
     } else {
@@ -214,13 +236,14 @@ void on_plate_selected(Plater& plater, PartPlate* plate)
         return; // same set: nothing to swap
     r.swapping = true;
     // Keep what was edited in the set that is leaving the bundle.
-    active_set_storage() = capture_presets(*wxGetApp().preset_bundle);
+    refresh_from_bundle(active_set_storage());
     r.active = new_owner;
     load_into_app(plater, active_set_storage());
     r.swapping = false;
     BOOST_LOG_TRIVIAL(info) << "[multi-printer] plate " << plate->get_index() << " uses "
                             << (new_owner ? "its own presets" : "the project's presets") << ", printer "
                             << wxGetApp().preset_bundle->printers.get_selected_preset_name();
+    refresh_current_plate_machine(plater); // a plate without a machine takes the only one of its model
 }
 
 bool is_swapping_presets() { return registry().swapping; }
@@ -259,6 +282,215 @@ const DynamicPrintConfig& plate_printer_config(const PartPlate* plate, std::stri
     return set->printers.edited;
 }
 
+// ---- The plate's physical machine ------------------------------------------------------------------
+
+namespace {
+
+bool& switching_machine()
+{
+    static bool b = false;
+    return b;
+}
+
+// The model id of the printer loaded in the bundle (what DeviceManager calls printer_type).
+std::string current_printer_model()
+{
+    PresetBundle& bundle = *wxGetApp().preset_bundle;
+    return bundle.printers.get_edited_preset().get_printer_type(&bundle);
+}
+
+// The user's machines of a model, as the print dialog lists them.
+std::vector<MachineObject*> my_machines_of_model(const std::string& model)
+{
+    std::vector<MachineObject*> out;
+    DeviceManager* dev = wxGetApp().getDeviceManager();
+    if (dev == nullptr || model.empty())
+        return out;
+    for (const auto& [id, obj] : dev->get_my_machine_list(dev->get_current_printer_agent_id()))
+        if (obj != nullptr && obj->printer_type == model)
+            out.push_back(obj);
+    return out;
+}
+
+// The plate's labels show its machine: the name drawn on the plate and its row in the object list.
+void refresh_plate_labels(Plater& plater, PartPlate* plate)
+{
+    if (plate == nullptr)
+        return;
+    plate->generate_plate_name_texture();
+    if (ObjectList* list = wxGetApp().obj_list())
+        list->GetModel()->SetCurSelectedPlateFullName(plate->get_index(), plate->get_plate_name());
+    plater.get_view3D_canvas3D()->set_as_dirty();
+}
+
+} // namespace
+
+MachineBinding plate_machine(const PartPlate* plate)
+{
+    const Registry& r = registry();
+    if (plate == nullptr)
+        plate = r.active; // a plate added from the current one gets its machine
+    const auto it = r.plate_sets.find(plate);
+    return it != r.plate_sets.end() ? it->second.machine : MachineBinding{};
+}
+
+void set_plate_machine(Plater& plater, PartPlate* plate, const MachineBinding& machine)
+{
+    if (plate == nullptr || !plate_process_settings_enabled())
+        return;
+    prune(plater);
+    give_every_plate_a_set(plater, plater.get_partplate_list().get_curr_plate());
+    Registry& r  = registry();
+    auto      it = r.plate_sets.find(plate);
+    if (it == r.plate_sets.end() || (it->second.machine.id == machine.id && it->second.machine.name == machine.name))
+        return;
+    it->second.machine = machine;
+    BOOST_LOG_TRIVIAL(info) << "[multi-printer] plate " << plate->get_index() << " prints on machine '" << machine.name << "' (" << machine.id << ")";
+    refresh_plate_labels(plater, plate);
+    // Rows per machine; after the caller is done (it may be reacting to a bed change itself).
+    wxGetApp().CallAfter([]() {
+        if (Plater* p = wxGetApp().plater())
+            p->set_bed_shape();
+    });
+    plater.update_project_dirty_from_presets();
+}
+
+std::string plate_machine_name(const PartPlate* plate)
+{
+    return plate_process_settings_enabled() ? plate_machine(plate).name : std::string();
+}
+
+std::string plate_machine_suffix(const PartPlate* plate)
+{
+    const std::string name = plate_machine_name(plate);
+    return name.empty() ? std::string() : " \xE2\x80\x94 " + name; // " — name"
+}
+
+void refresh_current_plate_machine(Plater& plater)
+{
+    if (!plate_process_settings_enabled() || is_swapping_presets())
+        return;
+    PartPlate* plate = plater.get_partplate_list().get_curr_plate();
+    if (plate == nullptr || registry().plate_sets.count(plate) == 0)
+        return;
+    const std::string    model   = current_printer_model();
+    const MachineBinding current = plate_machine(plate);
+    if (!current.empty() && !current.model.empty() && current.model != model) {
+        set_plate_machine(plater, plate, {}); // another model now: that machine cannot print it
+        return;
+    }
+    if (current.empty()) {
+        const std::vector<MachineObject*> machines = my_machines_of_model(model);
+        if (machines.size() == 1) // the only machine of this model: no need to ask
+            set_plate_machine(plater, plate, {machines.front()->dev_id, machines.front()->get_dev_name(), model});
+    }
+}
+
+void on_machine_selected_by_user(const std::string& dev_id)
+{
+    if (!plate_process_settings_enabled() || switching_machine() || dev_id.empty())
+        return;
+    Plater*        plater = wxGetApp().plater();
+    DeviceManager* dev    = wxGetApp().getDeviceManager();
+    if (plater == nullptr || dev == nullptr)
+        return;
+    MachineObject* obj = dev->get_my_machine(dev_id);
+    if (obj == nullptr || obj->printer_type != current_printer_model())
+        return; // a machine of another model does not print this plate
+    set_plate_machine(*plater, plater->get_partplate_list().get_curr_plate(), {obj->dev_id, obj->get_dev_name(), obj->printer_type});
+}
+
+bool ensure_plate_machine_selected(Plater& plater, bool ask)
+{
+    if (!plate_process_settings_enabled())
+        return true;
+    const MachineBinding machine = plate_machine(plater.get_partplate_list().get_curr_plate());
+    DeviceManager*       dev     = wxGetApp().getDeviceManager();
+    if (machine.empty() || dev == nullptr)
+        return true;
+    if (MachineObject* selected = dev->get_selected_machine(); selected != nullptr && selected->dev_id == machine.id)
+        return true;
+    const wxString name = from_u8(machine.name);
+    if (dev->get_my_machine_list(dev->get_current_printer_agent_id()).count(machine.id) == 0) {
+        // Owner's decision: an unavailable machine is shown, never blocks.
+        MessageDialog(&plater, wxString::Format(_L("This plate prints on %s, which is not available now (off, offline or not bound). The action goes on with the selected machine."), name),
+                      _L("Machine not available"), wxOK | wxICON_WARNING).ShowModal();
+        return true;
+    }
+    if (ask) {
+        MessageDialog question(&plater, wxString::Format(_L("This plate prints on %s. Switch to that machine?"), name),
+                               _L("Switch machine"), wxYES_NO | wxICON_QUESTION);
+        if (question.ShowModal() != wxID_YES)
+            return false;
+    }
+    switching_machine() = true;
+    const bool selected = dev->set_selected_machine(machine.id);
+    switching_machine() = false;
+    if (!selected) {
+        MessageDialog(&plater, wxString::Format(_L("Could not switch to %s."), name), _L("Switch machine"), wxOK | wxICON_WARNING).ShowModal();
+        return true;
+    }
+    // Owner's decision: wait until the switch is done, so the machine is never switched again halfway.
+    wxProgressDialog progress(_L("Switch machine"), wxString::Format(_L("Connecting to %s..."), name), 100, &plater,
+                              wxPD_APP_MODAL | wxPD_CAN_ABORT | wxPD_ELAPSED_TIME);
+    const auto start = std::chrono::steady_clock::now();
+    for (;;) {
+        MachineObject* obj = dev->get_selected_machine();
+        if (obj != nullptr && obj->dev_id == machine.id && obj->is_info_ready(false))
+            return true;
+        if (std::chrono::steady_clock::now() - start > std::chrono::seconds(45)) {
+            progress.Hide();
+            MessageDialog(&plater, wxString::Format(_L("%s did not answer yet. The action goes on; check the machine in the Device tab."), name),
+                          _L("Switch machine"), wxOK | wxICON_WARNING).ShowModal();
+            return true;
+        }
+        if (!progress.Pulse())
+            return false; // cancelled
+        wxMilliSleep(100);
+    }
+}
+
+bool print_plates_one_by_one(Plater& plater, const std::function<void(int)>& print_plate)
+{
+    if (!plate_process_settings_enabled())
+        return false;
+    prune(plater);
+    PartPlateList& plates = plater.get_partplate_list();
+    // Where each plate with objects goes: its machine, or its printer when it has none.
+    struct Target { int plate; std::string key; wxString label; bool sliced; };
+    std::vector<Target> targets;
+    for (int i = 0; i < plates.get_plate_count(); ++i) {
+        PartPlate* plate = plates.get_plate(i);
+        if (plate == nullptr || plate->empty())
+            continue;
+        std::string               printer;
+        plate_printer_config(plate, printer);
+        const MachineBinding machine = plate_machine(plate);
+        targets.push_back({i, machine.empty() ? "printer:" + printer : "machine:" + machine.id,
+                           from_u8(machine.empty() ? printer : machine.name + " (" + printer + ")"), plate->is_slice_result_valid()});
+    }
+    const bool several = std::any_of(targets.begin(), targets.end(), [&targets](const Target& t) { return t.key != targets.front().key; });
+    if (!several)
+        return false;
+    wxString list;
+    for (const Target& t : targets)
+        list += wxString::Format(_L("Plate %d"), t.plate + 1) + wxString::FromUTF8(" \xE2\x86\x92 ") + t.label +
+                (t.sliced ? wxString() : " (" + _L("not sliced: skipped") + ")") + "\n";
+    MessageDialog confirm(&plater, _L("The plates go to different machines. Each plate is sent to its own, one after the other:") + "\n\n" + list,
+                          _L("Print all plates"), wxOK | wxCANCEL | wxICON_QUESTION);
+    if (confirm.ShowModal() != wxID_OK)
+        return true;
+    for (const Target& t : targets) {
+        if (!t.sliced)
+            continue;
+        plater.select_plate(t.plate);                   // its printer, process, filaments
+        if (!ensure_plate_machine_selected(plater, false)) // its machine; already confirmed
+            break;
+        print_plate(t.plate);
+    }
+    return true;
+}
+
 namespace {
 
 struct PlateClipboard
@@ -283,7 +515,7 @@ const PresetSnapshot* stored_set(const PartPlate* plate)
     if (it == r.plate_sets.end())
         return nullptr;
     if (r.active == plate)
-        it->second = capture_presets(*wxGetApp().preset_bundle);
+        refresh_from_bundle(it->second);
     return &it->second;
 }
 
@@ -327,7 +559,18 @@ void copy_plate_settings(Plater& plater, PartPlate* plate)
 
 bool can_paste_plate_settings() { return clipboard().has; }
 
-void paste_plate_settings(Plater& plater, PartPlate* plate)
+namespace {
+
+// What "Paste special..." may paste; "Paste plate settings" pastes everything.
+struct PasteParts
+{
+    bool plate_options = true; // bed type, print sequence, ... (the plate's own keys)
+    bool process       = true; // process settings changed on the plate
+    bool presets       = true; // printer, process and filaments
+    bool machine       = true; // the physical machine
+};
+
+void paste_parts(Plater& plater, PartPlate* plate, const PasteParts& parts)
 {
     const PlateClipboard& c = clipboard();
     if (plate == nullptr || !c.has || !plate_process_settings_enabled())
@@ -335,23 +578,70 @@ void paste_plate_settings(Plater& plater, PartPlate* plate)
     prune(plater);
     give_every_plate_a_set(plater, plater.get_partplate_list().get_curr_plate());
     plater.take_snapshot("Paste plate settings");
-    *plate->config() = c.plate_config;
+    DynamicPrintConfig& target = *plate->config();
+    // Drop the parts being pasted, then copy them from the clipboard.
+    auto pasted = [&parts](const std::string& key) {
+        const bool native = MultiPrinter::is_native_plate_key(key);
+        return native ? parts.plate_options : parts.process;
+    };
+    for (const std::string& key : target.keys())
+        if (pasted(key))
+            target.erase(key);
+    for (const std::string& key : c.plate_config.keys())
+        if (pasted(key))
+            target.set_key_value(key, c.plate_config.option(key)->clone());
     Registry& r = registry();
-    if (c.has_set) {
-        r.plate_sets[plate] = c.set;
+    if (c.has_set && (parts.presets || parts.machine)) {
+        PresetSnapshot set = r.plate_sets.count(plate) ? r.plate_sets[plate] : c.set;
+        if (parts.presets) {
+            const MachineBinding keep = set.machine;
+            set                       = c.set;
+            set.machine               = keep;
+        }
+        if (parts.machine)
+            set.machine = c.set.machine;
+        r.plate_sets[plate] = set;
+        refresh_plate_labels(plater, plate);
         const bool is_current = plater.get_partplate_list().get_curr_plate() == plate;
-        if (is_current) {
+        if (is_current && parts.presets) {
             // Keep what was edited in the set that leaves the bundle, then show the pasted one.
             if (r.active != plate)
-                active_set_storage() = capture_presets(*wxGetApp().preset_bundle);
+                refresh_from_bundle(active_set_storage());
             r.active   = plate;
             r.swapping = true;
-            load_into_app(plater, c.set);
+            load_into_app(plater, set);
             r.swapping = false;
         }
+        wxGetApp().CallAfter([]() {
+            if (Plater* p = wxGetApp().plater())
+                p->set_bed_shape(); // the plate may be in another row now
+        });
     }
-    // Every plate keeps a set of its own: a clipboard without one leaves the plate's set as it is.
     after_plate_settings_changed(plater, plate);
+}
+
+} // namespace
+
+void paste_plate_settings(Plater& plater, PartPlate* plate) { paste_parts(plater, plate, PasteParts{}); }
+
+void paste_plate_settings_special(Plater& plater, PartPlate* plate)
+{
+    if (plate == nullptr || !clipboard().has)
+        return;
+    const wxString choices[] = {_L("Plate options (bed type, print sequence, ...)"), _L("Process settings changed on the plate"),
+                                _L("Printer, process and filaments"), _L("Machine")};
+    wxMultiChoiceDialog dlg(&plater, _L("What to paste on this plate:"), _L("Paste special"), 4, choices);
+    dlg.SetSelections(wxArrayInt{});
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+    PasteParts parts{false, false, false, false};
+    for (int i : dlg.GetSelections()) {
+        if (i == 0) parts.plate_options = true;
+        if (i == 1) parts.process = true;
+        if (i == 2) parts.presets = true;
+        if (i == 3) parts.machine = true;
+    }
+    paste_parts(plater, plate, parts);
 }
 
 void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent)
@@ -360,8 +650,10 @@ void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent)
     const wxString use_project = _L("Use the project's printer, process and filaments");
     const wxString copy        = _L("Copy plate settings");
     const wxString paste       = _L("Paste plate settings");
+    const wxString paste_some  = _L("Paste special...");
+    const wxString machine     = _L("Choose machine...");
     // The plate menu is reused: drop the items added for the previous plate.
-    for (const wxString& name : {use_own, use_project, copy, paste})
+    for (const wxString& name : {use_own, use_project, copy, paste, paste_some, machine})
         if (const int id = menu->FindItem(name); id != wxNOT_FOUND)
             menu->Destroy(id);
     if (!plate_process_settings_enabled())
@@ -377,6 +669,45 @@ void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent)
     append_menu_item(
         menu, wxID_ANY, paste, "", [plate](wxCommandEvent&) { paste_plate_settings(*wxGetApp().plater(), plate); }, "",
         nullptr, []() { return can_paste_plate_settings(); }, parent, int(pos) + 1);
+    append_menu_item(
+        menu, wxID_ANY, paste_some, "", [plate](wxCommandEvent&) { paste_plate_settings_special(*wxGetApp().plater(), plate); }, "",
+        nullptr, []() { return can_paste_plate_settings(); }, parent, int(pos) + 2);
+    append_menu_item(
+        menu, wxID_ANY, machine, "", [plate](wxCommandEvent&) { choose_plate_machine(*wxGetApp().plater(), plate); }, "",
+        nullptr, [plate]() { return wxGetApp().plater()->get_partplate_list().get_curr_plate() == plate; }, parent, int(pos) + 3);
+}
+
+void choose_plate_machine(Plater& plater, PartPlate* plate)
+{
+    if (plate == nullptr || plater.get_partplate_list().get_curr_plate() != plate)
+        return; // the machine list follows the printer loaded now: the current plate's
+    const std::string                 model    = current_printer_model();
+    const std::vector<MachineObject*> machines = my_machines_of_model(model);
+    const MachineBinding              current  = plate_machine(plate);
+    wxArrayString                     names;
+    names.Add(_L("No machine"));
+    int selection = 0;
+    for (size_t i = 0; i < machines.size(); ++i) {
+        names.Add(from_u8(machines[i]->get_dev_name()) + (machines[i]->is_online() ? wxString() : " (" + _L("offline") + ")"));
+        if (machines[i]->dev_id == current.id)
+            selection = int(i) + 1;
+    }
+    if (machines.empty() && !current.empty()) { // keep showing a machine that is not listed now
+        names.Add(from_u8(current.name) + " (" + _L("not available") + ")");
+        selection = 1;
+    }
+    wxSingleChoiceDialog dlg(&plater,
+                             machines.empty() ? _L("No machine of this printer model is bound or found on the network. Add it in the Device tab.")
+                                              : _L("The machine this plate prints on:"),
+                             _L("Choose machine"), names);
+    dlg.SetSelection(selection);
+    if (dlg.ShowModal() != wxID_OK)
+        return;
+    const int choice = dlg.GetSelection();
+    if (choice == 0)
+        set_plate_machine(plater, plate, {});
+    else if (choice - 1 < int(machines.size()))
+        set_plate_machine(plater, plate, {machines[choice - 1]->dev_id, machines[choice - 1]->get_dev_name(), model});
 }
 
 namespace {
@@ -426,7 +757,12 @@ std::string sets_to_json(const std::map<int, PresetSnapshot>& sets_by_plate_inde
                 entry[std::to_string(k)] = v;
             ams.push_back(entry);
         }
+        nlohmann::json loaded = nlohmann::json::object(); // what the machine had loaded, per tray
+        for (const auto& [tray, config] : set.filament_ams_list)
+            loaded[std::to_string(tray)] = config_to_json(config);
         plates.push_back({{"plate_index", index},
+                          {"machine", {{"id", set.machine.id}, {"name", set.machine.name}, {"model", set.machine.model}}},
+                          {"machine_filaments", loaded},
                           {"printer", set.printers.selected},
                           {"process", set.prints.selected},
                           {"filament", set.filaments.selected},
@@ -464,6 +800,13 @@ std::map<int, PresetSnapshot> sets_from_json(const std::string& json)
         set.prints.edited    = config_from_json(plate.value("process_config", nlohmann::json::object()));
         set.filaments.edited = config_from_json(plate.value("filament_config", nlohmann::json::object()));
         set.project_config   = config_from_json(plate.value("project_config", nlohmann::json::object()));
+        if (plate.contains("machine") && plate["machine"].is_object()) {
+            const nlohmann::json& m = plate["machine"];
+            set.machine             = {m.value("id", std::string()), m.value("name", std::string()), m.value("model", std::string())};
+        }
+        if (plate.contains("machine_filaments") && plate["machine_filaments"].is_object())
+            for (auto it = plate["machine_filaments"].begin(); it != plate["machine_filaments"].end(); ++it)
+                set.filament_ams_list[std::atoi(it.key().c_str())] = config_from_json(it.value());
         if (plate.contains("extruder_ams_counts") && plate["extruder_ams_counts"].is_array())
             for (const nlohmann::json& entry : plate["extruder_ams_counts"]) {
                 std::map<int, int> counts;
@@ -506,7 +849,7 @@ ProjectSaveScope::ProjectSaveScope(Plater& plater, bool keep_rows)
     }
     PresetBundle& bundle = *wxGetApp().preset_bundle;
     // The set in the bundle may have unsaved edits made since it was swapped in.
-    active_set_storage() = capture_presets(bundle);
+    refresh_from_bundle(active_set_storage());
     std::map<int, PresetSnapshot> by_index;
     for (const auto& [plate, set] : r.plate_sets)
         by_index[const_cast<PartPlate*>(plate)->get_index()] = set; // get_index() is not const upstream

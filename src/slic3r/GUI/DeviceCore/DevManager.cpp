@@ -1,4 +1,5 @@
 #include "DevManager.h"
+#include "slic3r/GUI/MultiPrinter/PlatePresets.hpp" // [multi-printer]
 #include "libslic3r/Utils.hpp"
 #include <boost/log/trivial.hpp>
 #include <mutex>
@@ -1190,6 +1191,7 @@ namespace Slic3r
             ctx.code = LifecycleEvtCode::Ok;
             fire_lifecycle_event(LifecycleEvent::DeviceSelected, ctx);
         }
+        GUI::MultiPrinterGui::on_machine_selected_by_user(new_dev_id); // [multi-printer] the current plate prints on it
         if (MachineObject* obj_ = get_selected_machine()) {
             GUI::wxGetApp().sidebar().update_sync_status(obj_);
             if(m_agent->get_filament_sync_mode() == FilamentSyncMode::subscription)

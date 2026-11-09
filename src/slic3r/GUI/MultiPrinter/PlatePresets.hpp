@@ -11,6 +11,7 @@
 #include "libslic3r/PrintConfig.hpp"
 
 #include <cstddef>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -30,8 +31,19 @@ class Plater;
 
 namespace MultiPrinterGui {
 
+// The physical machine a plate prints on (a Bambu-style device known to DeviceManager): its id (serial),
+// the name the user gave it and its model id. Empty: no machine chosen.
+struct MachineBinding
+{
+    std::string id;
+    std::string name;
+    std::string model;
+    bool        empty() const { return id.empty(); }
+};
+
 // What a plate's set holds: the selected presets with their unsaved edits, and the project data that
-// belongs to the filament list (colours, flush volumes, ...).
+// belongs to the filament list (colours, flush volumes, ...), plus the plate's machine and what that
+// machine had loaded the last time it was read (AMS trays / nozzles, PresetBundle::filament_ams_list).
 struct PresetSnapshot
 {
     struct Collection
@@ -39,10 +51,12 @@ struct PresetSnapshot
         std::string        selected;
         DynamicPrintConfig edited;
     };
-    Collection                      printers, prints, filaments;
-    std::vector<std::string>        filament_presets;
-    DynamicPrintConfig              project_config;
-    std::vector<std::map<int, int>> extruder_ams_counts;
+    Collection                        printers, prints, filaments;
+    std::vector<std::string>          filament_presets;
+    DynamicPrintConfig                project_config;
+    std::vector<std::map<int, int>>   extruder_ams_counts;
+    std::map<int, DynamicPrintConfig> filament_ams_list;
+    MachineBinding                    machine; // kept by refreshes from the PresetBundle
 };
 
 PresetSnapshot capture_presets(const PresetBundle& bundle);
@@ -75,6 +89,32 @@ bool plate_layout_enabled();
 // plate's stored set.
 const DynamicPrintConfig& plate_printer_config(const PartPlate* plate, std::string& preset_name);
 
+// The machine a plate prints on (nullptr plate: the plate about to be added from the current one).
+MachineBinding plate_machine(const PartPlate* plate);
+void           set_plate_machine(Plater& plater, PartPlate* plate, const MachineBinding& machine);
+// " — <machine name>" for the plate's labels, or empty.
+std::string    plate_machine_suffix(const PartPlate* plate);
+std::string    plate_machine_name(const PartPlate* plate);
+
+// Called when the printer of the current plate may have changed: drops a machine of another model and,
+// when the plate has none, takes the only machine of that model the user has.
+void refresh_current_plate_machine(Plater& plater);
+
+// Before syncing filaments or printing: when the current plate's machine is not the selected one, asks
+// to switch to it and waits (with a progress dialog) until it is connected. False: the user cancelled.
+// A machine that is not available only shows a warning: the action goes on.
+bool ensure_plate_machine_selected(Plater& plater, bool ask = true);
+
+// "Print all" when the plates use several machines or printers: lists "plate → machine" once for the
+// user to confirm, then for each sliced plate selects it (its presets and machine) and calls
+// `print_plate(plate index)`, which opens the usual print or upload dialog for it. False: one machine
+// for all plates, so the caller prints all plates the upstream way.
+bool print_plates_one_by_one(Plater& plater, const std::function<void(int)>& print_plate);
+
+// The user picked a machine (Device tab, print dialog): the current plate now prints on it, when its
+// model matches the plate's printer. Ignored while ensure_plate_machine_selected switches.
+void on_machine_selected_by_user(const std::string& dev_id);
+
 // Called by ProjectSaveScope: lays the plates out the upstream way while a project is written (`true`)
 // and back (`false`). Defined in PlateLayout.cpp.
 void suspend_plate_layout(Plater& plater, bool suspend);
@@ -92,6 +132,10 @@ void on_plate_added(Plater& plater, PartPlate* source, PartPlate* added);
 void copy_plate_settings(Plater& plater, PartPlate* plate);
 bool can_paste_plate_settings();
 void paste_plate_settings(Plater& plater, PartPlate* plate);
+// Asks which parts to paste: plate options, process settings, printer/process/filaments, machine.
+void paste_plate_settings_special(Plater& plater, PartPlate* plate);
+// Lists the user's machines of the current plate's printer model and binds the chosen one.
+void choose_plate_machine(Plater& plater, PartPlate* plate);
 
 // While a project file is written: the PresetBundle holds the project's set (so project_settings.config
 // is what plates without their own set use, and what upstream OrcaSlicer opens), and
