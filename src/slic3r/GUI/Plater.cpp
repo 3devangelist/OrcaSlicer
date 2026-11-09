@@ -20998,7 +20998,9 @@ int Plater::export_3mf(const boost::filesystem::path& output_path, SaveStrategy 
     // modify model
     publish(p->model, strategy);
 
-    MultiPrinterGui::ProjectSaveScope multi_printer_save(*this, (strategy & SaveStrategy::Backup) != 0); // [multi-printer] project's set + plates' sets
+    // [multi-printer] project's set + plates' sets; backups and sliced files keep the plates in rows
+    // (moving objects to upstream's grid would drop the slicing results they carry)
+    MultiPrinterGui::ProjectSaveScope multi_printer_save(*this, (strategy & SaveStrategy::Backup) || (strategy & SaveStrategy::WithGcode));
     DynamicPrintConfig cfg = wxGetApp().preset_bundle->full_config_secure();
     const std::string path_u8 = into_u8(path);
     wxBusyCursor wait;
