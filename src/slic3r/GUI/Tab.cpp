@@ -123,6 +123,8 @@
 #include <cstdlib>
 #include <unordered_set>
 #include "slic3r/GUI/GUI_Utils.hpp"
+#include "slic3r/GUI/MultiPrinter/PlateSettings.hpp" // [multi-printer]
+#include "slic3r/GUI/MultiPrinter/PlatePresets.hpp"  // [multi-printer]
 
 namespace Slic3r {
 
@@ -2642,9 +2644,11 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
     m_page_view->GetParent()->Layout();
 
     // ORCA also update states of plates for plates toolbar. same method exist on Plater::priv::on_select_preset()
+    // [multi-printer] not while a plate's own set is swapped in: the other plates' presets did not change
     auto& plate_list = wxGetApp().plater()->get_partplate_list();
-    for (auto plate : plate_list.get_plate_list())
-        plate->update_slice_result_valid_state(false);
+    if (!MultiPrinterGui::is_swapping_presets())
+        for (auto plate : plate_list.get_plate_list())
+            plate->update_slice_result_valid_state(false);
 }
 
 void Tab::show_timelapse_warning_dialog() {
@@ -2848,9 +2852,11 @@ void Tab::on_presets_changed()
     wxGetApp().plater()->update_project_dirty_from_presets();
 
     // ORCA also update states of plates for plates toolbar. same method exist on Plater::priv::on_select_preset()
+    // [multi-printer] not while a plate's own set is swapped in: the other plates' presets did not change
     auto& plate_list = wxGetApp().plater()->get_partplate_list();
-    for (auto plate : plate_list.get_plate_list())
-        plate->update_slice_result_valid_state(false);
+    if (!MultiPrinterGui::is_swapping_presets())
+        for (auto plate : plate_list.get_plate_list())
+            plate->update_slice_result_valid_state(false);
 }
 
 void Tab::build_preset_description_line(ConfigOptionsGroup* optgroup)
@@ -3800,6 +3806,9 @@ void TabPrintModel::set_model_config(std::map<ObjectBase *, ModelConfig *> const
 {
     m_object_configs = object_configs;
     m_prints.get_selected_preset().config.apply(*m_parent_tab->m_config);
+    if (m_type != Preset::TYPE_PLATE && MultiPrinterGui::plate_process_settings_enabled()) // [multi-printer] object base = global + plate
+        m_prints.get_selected_preset().config.apply_only(*wxGetApp().plate_tab->get_config(),
+            MultiPrinterGui::keys_objects_inherit(plate_keys, *wxGetApp().plate_tab->get_config(), *m_parent_tab->m_config));
     update_model_config();
 }
 
@@ -3827,7 +3836,9 @@ void TabPrintModel::update_model_config()
     }
     m_config->apply(*m_parent_tab->m_config);
     if (m_type != Preset::TYPE_PLATE) {
-        m_config->apply_only(*wxGetApp().plate_tab->get_config(), plate_keys);
+        // [multi-printer] objects inherit global -> plate -> object
+        m_config->apply_only(*wxGetApp().plate_tab->get_config(),
+                             MultiPrinterGui::keys_objects_inherit(plate_keys, *wxGetApp().plate_tab->get_config(), *m_parent_tab->m_config));
     }
     m_null_keys.clear();
     if (!m_object_configs.empty()) {
@@ -4102,11 +4113,15 @@ TabPrintPlate::TabPrintPlate(ParamsPanel* parent) :
 {
     m_parent_tab = wxGetApp().get_tab(Preset::TYPE_PRINT);
     m_type = Preset::TYPE_PLATE;
-    m_keys = concat(m_keys, plate_keys);
+    m_keys = MultiPrinterGui::plate_tab_keys(concat(m_keys, plate_keys)); // [multi-printer] + process keys when enabled
 }
 
 void TabPrintPlate::build()
 {
+    // [multi-printer] with per-plate process settings, the plate tab also gets every process page
+    const bool all_process_pages = MultiPrinterGui::plate_process_settings_enabled();
+    if (all_process_pages)
+        TabPrintModel::build();
     m_presets = &m_prints;
     load_initial_data();
 
@@ -4134,6 +4149,7 @@ void TabPrintPlate::build()
         line.undo_to_sys = true;
     }
     optgroup->have_sys_config = [this] { m_back_to_sys = true; return true; };
+    if (all_process_pages) { m_pages.pop_back(); m_pages.insert(m_pages.begin(), page); } // [multi-printer] plate page first
 }
 
 void TabPrintPlate::reset_model_config()
@@ -4146,6 +4162,7 @@ void TabPrintPlate::reset_model_config()
             plate_item.second->erase(k);
         }
         auto plate = dynamic_cast<PartPlate*>(plate_item.first);
+        for (auto& k : rmkeys) MultiPrinterGui::store_plate_value(plate, *m_config, k, true); // [multi-printer]
         plate->reset_bed_type();
         plate->reset_skirt_start_angle();
         plate->set_print_seq(PrintSequence::ByDefault);
@@ -4173,6 +4190,7 @@ void TabPrintPlate::on_value_change(const std::string& opt_key, const boost::any
         for (auto plate_item : m_object_configs) {
             plate_item.second->erase(k);
             auto plate = dynamic_cast<PartPlate*>(plate_item.first);
+            MultiPrinterGui::store_plate_value(plate, *m_config, k, true); // [multi-printer]
             if (k == "curr_bed_type")
                 plate->reset_bed_type();
             if (k == "skirt_start_angle")
@@ -4192,6 +4210,7 @@ void TabPrintPlate::on_value_change(const std::string& opt_key, const boost::any
         for (auto plate_item : m_object_configs) {
             plate_item.second->apply_only(*m_config, { k });
             auto plate = dynamic_cast<PartPlate*>(plate_item.first);
+            MultiPrinterGui::store_plate_value(plate, *m_config, k, false); // [multi-printer]
             BedType bed_type;
             PrintSequence print_seq;
             LayerSeq first_layer_seq_choice;

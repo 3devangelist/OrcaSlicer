@@ -118,6 +118,9 @@
 #include "libslic3r/TriangleMesh.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GLModel.hpp"
+#include "libslic3r/MultiPrinter/PlateOverrides.hpp" // [multi-printer]
+#include "MultiPrinter/PlateLayout.hpp"               // [multi-printer]
+#include "MultiPrinter/PlatePresets.hpp"              // [multi-printer]
 #include <nlohmann/json.hpp>
 
 class wxFont;
@@ -2735,6 +2738,7 @@ void PartPlate::render_icons(bool bottom, bool only_name, int hover_id)
 
 			if (m_partplate_list->render_plate_settings) {
 				bool has_plate_settings = get_bed_type() != BedType::btDefault || get_print_seq() != PrintSequence::ByDefault || !get_first_layer_print_sequence().empty() || !get_other_layers_print_sequence().empty() || has_spiral_mode_config();
+				has_plate_settings = has_plate_settings || MultiPrinter::has_plate_overrides(m_config); // [multi-printer]
                 if (hover_id == 5) {
                     if (!has_plate_settings)
                         render_icon_texture(m_plate_settings_icon.model, m_partplate_list->m_plate_settings_hovered_texture);
@@ -4277,6 +4281,9 @@ void PartPlate::generate_plate_name_texture()
 	// generate m_name_texture texture from m_name with generate_from_text_string
 	m_name_texture.reset();
 	auto text = m_name.empty()? _L("Untitled") : from_u8(m_name);
+	// [multi-printer] the plate's machine, so each row shows which machine it is
+	if (const std::string machine = MultiPrinterGui::plate_machine_name(this); !machine.empty())
+		text = m_name.empty() ? from_u8(machine) : text + wxString::FromUTF8(" \xE2\x80\x94 ") + from_u8(machine);
 
     // ORCA also scale font size to prevent low res texture
     int size = wxGetApp().em_unit() * PARTPLATE_EDIT_PLATE_NAME_ICON_SIZE;
@@ -6036,6 +6043,8 @@ Vec3d PartPlateList::compute_origin_using_new_size(int i, int new_width, int new
 //compute the origin for printable plate with index i
 Vec3d PartPlateList::compute_origin_for_unprintable()
 {
+	if (const auto pos = MultiPrinterGui::layout_unprintable_position(*this)) // [multi-printer] under the last row
+		return Vec3d(pos->x(), pos->y(), 0.);
 	int max_count = m_plate_cols * m_plate_cols;
 	if (m_plate_count == max_count)
 		return compute_origin(max_count + m_plate_cols - 1, m_plate_cols + 1);
@@ -6046,6 +6055,9 @@ Vec3d PartPlateList::compute_origin_for_unprintable()
 //compute shape position
 Vec2d PartPlateList::compute_shape_position(int index, int cols)
 {
+	if (const auto own = MultiPrinterGui::layout_position(*this, index)) // [multi-printer] one row per printer
+		return *own;
+
 	Vec2d pos;
 	int row, col;
 
@@ -6420,7 +6432,7 @@ void PartPlateList::set_default_wipe_tower_pos_for_plate(int plate_idx, bool ini
 }
 
 //this may be happened after machine changed
-void PartPlateList::reset_size(int width, int depth, double height, bool reload_objects, bool update_shapes)
+void PartPlateList::reset_size(int width, int depth, double height, bool reload_objects, bool update_shapes, bool move_instances)
 {
 	BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(":before size: plate_width %1%, plate_depth %2%, plate_height %3%") % m_plate_width % m_plate_depth % m_plate_height;
 	BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(":after size: plate_width %1%, plate_depth %2%, plate_height %3%") % width % depth % height;
@@ -6429,11 +6441,14 @@ void PartPlateList::reset_size(int width, int depth, double height, bool reload_
 		m_plate_width = width;
 		m_plate_depth = depth;
 		m_plate_height = height;
-		update_all_plates_pos_and_size(false, false, true);
+		update_all_plates_pos_and_size(move_instances, false, true); // [multi-printer] was false
 		if (update_shapes) {
 			set_shapes(m_shape, m_exclude_areas, m_wrapping_exclude_areas, m_extruder_areas, m_extruder_heights, m_logo_texture_filename, m_height_to_lid, m_height_to_rod);
 		}
-		if (reload_objects)
+		if (move_instances) {
+			// [multi-printer] objects moved with their plates, so the plates still hold the same objects;
+			// the caller reassigns them once set_shapes has given the plates their new shape.
+		} else if (reload_objects)
 			reload_all_objects();
 		else
 			clear(false, false, false, -1);
@@ -6590,7 +6605,9 @@ int PartPlateList::create_plate(bool adjust_position)
 		reload_all_objects();
 
 	origin = compute_origin(new_index, cols);
-	plate = new PartPlate(this, origin, m_plate_width, m_plate_depth, m_plate_height, m_plater, m_model, true, printer_technology);
+	const auto own_bed = MultiPrinterGui::layout_geometry(*this, new_index); // [multi-printer] the plate's own bed
+	plate = new PartPlate(this, origin, own_bed ? own_bed->width : m_plate_width, own_bed ? own_bed->depth : m_plate_depth,
+		own_bed ? own_bed->height : m_plate_height, m_plater, m_model, true, printer_technology);
 	assert(plate != NULL);
 
 	if (printer_technology == ptFFF)
@@ -6607,7 +6624,10 @@ int PartPlateList::create_plate(bool adjust_position)
 
 	plate->set_index(new_index);
 	Vec2d pos = compute_shape_position(new_index, cols);
-	plate->set_shape(m_shape, m_exclude_areas, m_extruder_areas, m_extruder_heights, pos, m_height_to_lid, m_height_to_rod);
+	if (own_bed) // [multi-printer]
+		plate->set_shape(own_bed->shape, own_bed->exclude_area, own_bed->extruder_areas, own_bed->extruder_heights, pos, m_height_to_lid, m_height_to_rod);
+	else
+		plate->set_shape(m_shape, m_exclude_areas, m_extruder_areas, m_extruder_heights, pos, m_height_to_lid, m_height_to_rod);
 	m_plate_list.emplace_back(plate);
 	update_plate_cols();
 	if (old_cols != cols)
@@ -7090,10 +7110,16 @@ void PartPlateList::update_all_plates_pos_and_size(bool adjust_position, bool wi
 
 		//compute origin1 for PartPlate
 		origin1 = compute_origin(i, m_plate_cols);
-		plate->set_pos_and_size(origin1, m_plate_width, m_plate_depth, m_plate_height, adjust_position, do_clear);
+		// [multi-printer] the plate's own bed; its wipe tower is reset only when the plate itself changed
+		const auto own_bed = MultiPrinterGui::layout_geometry(*this, int(i));
+		const int    width  = own_bed ? own_bed->width : m_plate_width;
+		const int    depth  = own_bed ? own_bed->depth : m_plate_depth;
+		const double height = own_bed ? own_bed->height : m_plate_height;
+		const bool   plate_changed = !own_bed || plate->m_origin != origin1 || plate->m_width != width || plate->m_depth != depth;
+		plate->set_pos_and_size(origin1, width, depth, height, adjust_position, do_clear);
 
 		// set default wipe pos when switch plate
-        if (switch_plate_type && m_plater/* && plate->get_used_extruders().size() <= 0*/) {
+        if (switch_plate_type && m_plater && plate_changed && !MultiPrinterGui::layout_is_temporary()/* && plate->get_used_extruders().size() <= 0*/) {
 			set_default_wipe_tower_pos_for_plate(i);
 		}
 	}
@@ -7621,8 +7647,8 @@ bool PartPlateList::preprocess_arrange_polygon(int obj_index, int instance_index
 				arrange_polygon.bed_idx = i;
 				arrange_polygon.row = i / m_plate_cols;
 				arrange_polygon.col = i % m_plate_cols;
-				arrange_polygon.translation(X) -= scaled<double>(plate_stride_x() * arrange_polygon.col);
-				arrange_polygon.translation(Y) += scaled<double>(plate_stride_y() * arrange_polygon.row);
+				arrange_polygon.translation(X) -= scaled<double>(compute_shape_position(i, m_plate_cols).x()); // [multi-printer] the plate's own origin
+				arrange_polygon.translation(Y) -= scaled<double>(compute_shape_position(i, m_plate_cols).y());
 			}
 			else
 			{
@@ -7632,8 +7658,8 @@ bool PartPlateList::preprocess_arrange_polygon(int obj_index, int instance_index
 					arrange_polygon.bed_idx = i - lockplate_cnt;
 					arrange_polygon.row = i / m_plate_cols;
 					arrange_polygon.col = i % m_plate_cols;
-					arrange_polygon.translation(X) -= scaled<double>(plate_stride_x() * arrange_polygon.col);
-					arrange_polygon.translation(Y) += scaled<double>(plate_stride_y() * arrange_polygon.row);
+					arrange_polygon.translation(X) -= scaled<double>(compute_shape_position(i, m_plate_cols).x()); // [multi-printer] the plate's own origin
+					arrange_polygon.translation(Y) -= scaled<double>(compute_shape_position(i, m_plate_cols).y());
 				}
 			}
 			BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": obj_id %1% instance_id %2% already in plate %3%, locked %4%, row %5%, col %6%\n") % obj_index % instance_index % i % locked % arrange_polygon.row % arrange_polygon.col;
@@ -7670,8 +7696,8 @@ bool PartPlateList::preprocess_arrange_polygon_other_locked(int obj_index, int i
 				arrange_polygon.bed_idx = i;
 				arrange_polygon.row = i / m_plate_cols;
 				arrange_polygon.col = i % m_plate_cols;
-				arrange_polygon.translation(X) -= scaled<double>(plate_stride_x() * arrange_polygon.col);
-				arrange_polygon.translation(Y) += scaled<double>(plate_stride_y() * arrange_polygon.row);
+				arrange_polygon.translation(X) -= scaled<double>(compute_shape_position(i, m_plate_cols).x()); // [multi-printer] the plate's own origin
+				arrange_polygon.translation(Y) -= scaled<double>(compute_shape_position(i, m_plate_cols).y());
 				//BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": obj_id %1% instance_id %2% in plate %3%, locked %4%, row %5%, col %6%\n") % obj_index % instance_index % i % locked % arrange_polygon.row % arrange_polygon.col;
 				return locked;
 			}
@@ -7934,8 +7960,8 @@ void PartPlateList::postprocess_arrange_polygon(arrangement::ArrangePolygon& arr
 	{
 		arrange_polygon.row = arrange_polygon.bed_idx / m_plate_cols;
 		arrange_polygon.col = arrange_polygon.bed_idx % m_plate_cols;
-		arrange_polygon.translation(X) += scaled<double>(plate_stride_x() * arrange_polygon.col);
-		arrange_polygon.translation(Y) -= scaled<double>(plate_stride_y() * arrange_polygon.row);
+		arrange_polygon.translation(X) += scaled<double>(compute_shape_position(arrange_polygon.bed_idx, m_plate_cols).x()); // [multi-printer] the plate's own origin
+		arrange_polygon.translation(Y) += scaled<double>(compute_shape_position(arrange_polygon.bed_idx, m_plate_cols).y());
 	}
 
 	return;
@@ -8093,7 +8119,10 @@ bool PartPlateList::set_shapes(const Pointfs              &shape,
 		Vec2d pos;
 
 		pos = compute_shape_position(i, m_plate_cols);
-		plate->set_shape(shape, exclude_areas, extruder_areas, extruder_heights, pos, height_to_lid, height_to_rod);
+		if (const auto own_bed = MultiPrinterGui::layout_geometry(*this, int(i))) // [multi-printer] the plate's own bed
+			plate->set_shape(own_bed->shape, own_bed->exclude_area, own_bed->extruder_areas, own_bed->extruder_heights, pos, height_to_lid, height_to_rod);
+		else
+			plate->set_shape(shape, exclude_areas, extruder_areas, extruder_heights, pos, height_to_lid, height_to_rod);
 	}
 	is_load_bedtype_textures = false; //reload textures
     is_load_extruder_only_area_textures = false; // reload textures

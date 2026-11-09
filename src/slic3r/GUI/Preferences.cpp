@@ -72,6 +72,7 @@
 #include "slic3r/Utils/NetworkAgent.hpp"
 #include "NetworkPluginDialog.hpp"
 #include "DownloadProgressDialog.hpp"
+#include "MultiPrinter/PlateSettings.hpp" // [multi-printer]
 
 #ifdef __WINDOWS__
 #ifdef _MSW_DARK_MODE
@@ -1818,6 +1819,14 @@ void PreferencesDialog::create_items()
 
     auto item_multi_machine    = create_item_checkbox(_L("Multi device management"), _L("With this option enabled, you can send a task to multiple devices at the same time and manage multiple devices."), "enable_multi_machine", _L("(Requires restart)"));
     g_sizer->Add(item_multi_machine);
+
+    // [multi-printer] fork feature, off by default
+    auto item_plate_process_settings = create_item_checkbox(_L("Printer and settings per plate"),
+        _L("With this option enabled, a plate's settings can change any process setting for the objects on that plate, "
+           "and a plate can use its own printer, process and filaments (right-click the plate). "
+           "Objects take the global settings first, then their plate's, then their own."),
+        MultiPrinterGui::PREFERENCE_KEY, _L("(Requires restart)"));
+    g_sizer->Add(item_plate_process_settings);
 
     auto item_speed_dial = create_item_checkbox(_L("Open the Speed Dial from the keyboard"),
         _L("When enabled, the Speed Dial keyboard shortcut (Space by default) opens the action search from any page."),

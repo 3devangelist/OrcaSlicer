@@ -10,6 +10,8 @@ add_executable(${_TEST_NAME}_tests
     test_amf.cpp
     # Round-trip seam metadata and active/dormant volume settings in both formats.
     test_precise_seam_3mf.cpp
+    # [multi-printer] per-plate process settings and their 3MF storage
+    test_plate_overrides.cpp
     # Pure perimeter extraction is independent of Print/Layer fixtures.
     test_precise_seam.cpp
     # Contour correspondence is pure geometry; Print integration stays in fff_print.

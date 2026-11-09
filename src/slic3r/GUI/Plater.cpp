@@ -307,6 +307,8 @@
 #include "DeviceCore/DevConfigUtil.h"
 #include "DeviceCore/DevDefs.h"
 #include "BBLTopbar.hpp"
+#include "MultiPrinter/PlatePresets.hpp" // [multi-printer]
+#include "MultiPrinter/PlateLayout.hpp"  // [multi-printer]
 
 namespace fs = boost::filesystem;
 using namespace nlohmann;
@@ -6733,6 +6735,8 @@ bool Sidebar::is_multifilament()
 }
 
 void Sidebar::deal_btn_sync() {
+    if (!MultiPrinterGui::ensure_plate_machine_selected(*wxGetApp().plater())) // [multi-printer] the plate's machine
+        return;
     m_begin_sync_printer_status = true;
     bool only_external_material;
     // Manual "sync machine" button: is_manual=true so an H2C pops the MultiNozzleSyncDialog to pick a nozzle option.
@@ -7662,6 +7666,7 @@ struct Plater::priv
     void on_action_open_project(SimpleEvent&);
     void on_action_slice_plate(SimpleEvent&);
     void on_action_slice_all(SimpleEvent&);
+    void update_slice_all_extruder_params(); // [multi-printer]
     void on_action_print_plate(SimpleEvent&);
     void open_machine_select_dialog(int plate_idx, PrintFromType print_type = PrintFromType::FROM_NORMAL);
     void on_action_print_all(SimpleEvent&);
@@ -10063,6 +10068,8 @@ std::vector<size_t> Plater::priv::load_files(const std::vector<fs::path>& input_
             if (is_project_file) {
                 q->model().cad_recipe = model.cad_recipe;
                 loaded_cad_recipe     = !model.cad_recipe.empty();
+                q->model().multi_printer_plates = model.multi_printer_plates;             // [multi-printer]
+                MultiPrinterGui::on_project_loaded(*q, model.multi_printer_plates);       // [multi-printer]
             }
 
             BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ":" << __LINE__ << boost::format(", finished load_model_objects");
@@ -10878,6 +10885,7 @@ void Plater::priv::reset(bool apply_presets_change, bool reload_presets)
     // clear_objects() only drops the ModelObjects; the CAD recipe is Model-level state and would
     // otherwise be written into every project saved for the rest of the session.
     model.cad_recipe.clear();
+    model.multi_printer_plates.clear(); MultiPrinterGui::on_project_reset(); // [multi-printer]
     assemble_view->get_canvas3d()->reset_explosion_ratio();
     update();
 
@@ -12603,6 +12611,7 @@ void Plater::priv::set_current_panel(wxPanel* panel, bool no_slice)
                     //reset current plate to the slicing plate
                     int plate_index = this->background_process.get_current_plate()->get_index();
                     this->partplate_list.select_plate(plate_index);
+                    MultiPrinterGui::on_plate_selected(*q, partplate_list.get_curr_plate()); // [multi-printer] the plate's presets
                 }
             }
             else if (only_has_gcode_need_preview)
@@ -13141,10 +13150,15 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
     Slic3r::put_other_changes();
 
     // update slice state and set bedtype default for 3rd-party printer
+    // [multi-printer] not when a plate's own set is swapped in: the other plates' presets did not change
     auto plate_list = partplate_list.get_plate_list();
     for (auto plate : plate_list) {
-         plate->update_slice_result_valid_state(false);
+         if (!MultiPrinterGui::is_swapping_presets())
+             plate->update_slice_result_valid_state(false);
     }
+    // [multi-printer] the plate's machine follows its printer model
+    if (preset_type == Preset::TYPE_PRINTER)
+        MultiPrinterGui::refresh_current_plate_machine(*q);
 }
 
 void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
@@ -13538,6 +13552,7 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
 
         q->Freeze();
         q->select_plate(m_cur_slice_plate);
+        if (MultiPrinterGui::plate_layout_enabled()) update_slice_all_extruder_params(); // [multi-printer] this plate's printer
         partplate_list.select_plate_view();
         int ret = q->start_next_slice();
         if (ret) {
@@ -13785,6 +13800,19 @@ void Plater::priv::on_action_slice_plate(SimpleEvent&)
 }
 
 //BBS: GUI refactor: slice all
+//BBS update extruder params and speed table before slicing
+// [multi-printer] moved out of on_action_slice_all so it runs for each plate's own printer
+void Plater::priv::update_slice_all_extruder_params()
+{
+    const Slic3r::DynamicPrintConfig& config = wxGetApp().preset_bundle->full_config();
+    auto& print = q->get_partplate_list().get_current_fff_print();
+    auto print_config = print.config();
+    int numExtruders = wxGetApp().preset_bundle->filament_presets.size();
+
+    Model::setExtruderParams(config, numExtruders);
+    Model::setPrintSpeedTable(config, print_config);
+}
+
 void Plater::priv::on_action_slice_all(SimpleEvent&)
 {
     if (q != nullptr) {
@@ -13818,19 +13846,13 @@ void Plater::priv::on_action_slice_all(SimpleEvent&)
             }
         }
 
-        //BBS update extruder params and speed table before slicing
-        const Slic3r::DynamicPrintConfig& config = wxGetApp().preset_bundle->full_config();
-        auto& print = q->get_partplate_list().get_current_fff_print();
-        auto print_config = print.config();
-        int numExtruders = wxGetApp().preset_bundle->filament_presets.size();
-
-        Model::setExtruderParams(config, numExtruders);
-        Model::setPrintSpeedTable(config, print_config);
         m_slice_all = true;
         m_slice_all_only_has_gcode = true;
         m_cur_slice_plate = 0;
         //select plate
         q->select_plate(m_cur_slice_plate);
+        // [multi-printer] moved after select_plate: the plate's own printer and filaments are loaded now
+        update_slice_all_extruder_params();
         q->reslice();
         q->select_view_3D("Preview");
         //BBS: wish to select all plates stats item
@@ -13844,6 +13866,8 @@ void Plater::priv::on_action_print_plate(SimpleEvent&)
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received print plate event\n" ;
     }
 
+    if (!MultiPrinterGui::ensure_plate_machine_selected(*q)) // [multi-printer] the plate's machine
+        return;
     PresetBundle& preset_bundle = *wxGetApp().preset_bundle;
     if (preset_bundle.use_bbl_network() || wxGetApp().app_config->get_bool("use_printer_agents")) {
         open_machine_select_dialog(partplate_list.get_curr_plate_index());
@@ -13940,6 +13964,8 @@ int Plater::priv::update_print_required_data(Slic3r::DynamicPrintConfig config, 
 
 void Plater::priv::on_action_send_to_printer(bool isall)
 {
+	if (!isall && !MultiPrinterGui::ensure_plate_machine_selected(*q)) // [multi-printer] the plate's machine
+        return;
 	if (!m_send_to_sdcard_dlg) m_send_to_sdcard_dlg = new SendToPrinterDialog(q);
     if (isall) {
         m_send_to_sdcard_dlg->prepare(PLATE_ALL_IDX);
@@ -13968,7 +13994,16 @@ void Plater::priv::on_action_print_all(SimpleEvent&)
     }
 
     PresetBundle& preset_bundle = *wxGetApp().preset_bundle;
-    if (preset_bundle.use_bbl_network() || wxGetApp().app_config->get_bool("use_printer_agents")) {
+    const bool    bbl_print     = preset_bundle.use_bbl_network() || wxGetApp().app_config->get_bool("use_printer_agents");
+    // [multi-printer] plates of several machines or printers: each plate to its own, one after the other
+    if (MultiPrinterGui::print_plates_one_by_one(*q, [this, bbl_print](int plate_idx) {
+            if (bbl_print)
+                open_machine_select_dialog(plate_idx);
+            else
+                q->send_gcode_legacy(PLATE_CURRENT_IDX, nullptr);
+        }))
+        return;
+    if (bbl_print) {
         open_machine_select_dialog(PLATE_ALL_IDX);
     } else {
         q->send_gcode_legacy(PLATE_ALL_IDX, nullptr);
@@ -15026,6 +15061,8 @@ void Plater::priv::set_bed_shape(const Pointfs       &shape,
     if (!new_shape && partplate_list.get_logo_texture_filename() != custom_texture) {
         partplate_list.update_logo_texture_filename(custom_texture);
     }
+    const bool plate_layout_changed = MultiPrinterGui::layout_changed(partplate_list); // [multi-printer] one row per printer
+    new_shape |= plate_layout_changed;
     if (new_shape) {
         if (view3D) view3D->bed_shape_changed();
         if (preview) preview->bed_shape_changed();
@@ -15036,8 +15073,25 @@ void Plater::priv::set_bed_shape(const Pointfs       &shape,
         Vec3d min = bed.printable_bounding_box().min;
         double z = config->opt_float("printable_height");
 
-        partplate_list.reset_size(max.x() - min.x() - Bed3D::Axes::DefaultTipRadius, max.y() - min.y() - Bed3D::Axes::DefaultTipRadius, z);
+        const bool objects_follow = MultiPrinterGui::objects_follow_plates(); // [multi-printer] objects stay on their plate
+        partplate_list.reset_size(max.x() - min.x() - Bed3D::Axes::DefaultTipRadius, max.y() - min.y() - Bed3D::Axes::DefaultTipRadius, z,
+                                  true, false, objects_follow);
+        if (plate_layout_changed) partplate_list.update_all_plates_pos_and_size(objects_follow, false, true); // [multi-printer] rows changed
         partplate_list.set_shapes(shape, exclude_areas, wrapping_exclude_areas, extruder_areas, extruder_heights, custom_texture, height_to_lid, height_to_rod);
+        // [multi-printer] reassign objects now that the plates have their new shapes, and register the
+        // rebuilt plate meshes for mouse picking (as the old-3MF path above does), so picking never
+        // uses the meshes set_shapes just replaced
+        if (MultiPrinterGui::plate_layout_enabled()) {
+            // Only when objects did not move with their plates (a file saved with the rows being opened):
+            // objects that moved along are still on the same plates, and reassigning clears every
+            // plate's slicing result (selecting a plate, saving a project).
+            if (!objects_follow)
+                partplate_list.reload_all_objects();
+            if (view3D) {
+                view3D->get_canvas3d()->remove_raycasters_for_picking(SceneRaycaster::EType::Bed);
+                partplate_list.register_raycasters_for_picking(*view3D->get_canvas3d());
+            }
+        }
 
         Vec2d new_shape_position = partplate_list.get_current_shape_position();
         if (shape_position != new_shape_position)
@@ -20490,6 +20544,9 @@ int Plater::export_3mf(const boost::filesystem::path& output_path, SaveStrategy 
     // modify model
     publish(p->model, strategy);
 
+    // [multi-printer] project's set + plates' sets; backups and sliced files keep the plates in rows
+    // (moving objects to upstream's grid would drop the slicing results they carry)
+    MultiPrinterGui::ProjectSaveScope multi_printer_save(*this, (strategy & SaveStrategy::Backup) || (strategy & SaveStrategy::WithGcode));
     DynamicPrintConfig cfg = wxGetApp().preset_bundle->full_config_secure();
     const std::string path_u8 = into_u8(path);
     wxBusyCursor wait;
@@ -21449,6 +21506,7 @@ void Plater::on_filament_count_change(size_t num_filaments)
     }
 
     for (ModelObject* mo : wxGetApp().model().objects) {
+        if (!MultiPrinterGui::may_clamp_object_filaments(*this, mo)) continue; // [multi-printer] other plate's filaments
         for (ModelVolume* mv : mo->volumes) {
             mv->update_extruder_count(num_filaments);
         }
@@ -21476,6 +21534,7 @@ void Plater::on_filaments_delete(size_t num_filaments, size_t filament_id, int r
         ? wxGetApp().preset_bundle->project_config.option<ConfigOptionBools>("filament_is_mixed")->values
         : is_mixed_before_delete;
     for (ModelObject *mo : wxGetApp().model().objects) {
+        if (!MultiPrinterGui::may_clamp_object_filaments(*this, mo)) continue; // [multi-printer] other plate's filaments
         for (ModelVolume *mv : mo->volumes) {
             mv->update_extruder_count_when_delete_filament(num_filaments, filament_id + 1, replace_filament_id + 1, is_mixed);  // this function is 1 base
         }
@@ -22690,6 +22749,7 @@ int Plater::select_plate(int plate_index, bool need_slice)
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: plate %2%, need_slice %3% ")%__LINE__ %plate_index  %need_slice;
     take_snapshot("select partplate!");
     ret = p->partplate_list.select_plate(plate_index);
+    if (!ret) MultiPrinterGui::on_plate_selected(*this, p->partplate_list.get_curr_plate()); // [multi-printer] the plate's presets
     if (!ret) {
         if (is_view3D_shown())
             wxGetApp().plater()->canvas3D()->render();
@@ -23347,6 +23407,7 @@ int Plater::select_plate_by_hover_id(int hover_id, bool right_click, bool isModi
     {
         //select plate
         ret = p->partplate_list.select_plate(plate_index);
+        if (!ret) MultiPrinterGui::on_plate_selected(*this, p->partplate_list.get_curr_plate()); // [multi-printer] the plate's presets
         if (!ret) {
             SimpleEvent event(EVT_GLCANVAS_PLATE_SELECT);
             p->on_plate_selected(event);
@@ -23609,9 +23670,11 @@ int Plater::add_plate()
     if (!p->can_add_plate())
         return -1;
     take_snapshot("add partplate");
+    PartPlate* source_plate = p->partplate_list.get_curr_plate(); // [multi-printer]
     int new_plate = p->partplate_list.create_plate();
     if (new_plate < 0)
         return new_plate;
+    MultiPrinterGui::on_plate_added(*this, source_plate, p->partplate_list.get_plate(new_plate)); // [multi-printer] copy its settings
     p->partplate_list.select_plate(new_plate);
     update();
 

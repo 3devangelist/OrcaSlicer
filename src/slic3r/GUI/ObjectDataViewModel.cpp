@@ -6,6 +6,8 @@
 #include "GUI.hpp"
 #include "I18N.hpp"
 #include "PartPlate.hpp"
+#include "Plater.hpp"
+#include "MultiPrinter/PlatePresets.hpp" // [multi-printer]
 
 #include "libslic3r/Model.hpp"
 
@@ -521,6 +523,7 @@ wxDataViewItem ObjectDataViewModel::AddPlate(PartPlate* part_plate, wxString nam
         if (!part_plate->get_plate_name().empty()) {
             plate_name += wxString(" (", wxConvUTF8) + from_u8(part_plate->get_plate_name()) + wxString(")", wxConvUTF8);
         }
+        plate_name += from_u8(MultiPrinterGui::plate_machine_suffix(part_plate)); // [multi-printer] its machine
     }
     auto plate_node = new ObjectDataViewModelNode(part_plate, plate_name);
 
@@ -1352,6 +1355,8 @@ void ObjectDataViewModel::SetCurSelectedPlateFullName(int plate_idx, const std::
             if (!custom_name.empty()) {
                 plate_full_name += wxString(" (", wxConvUTF8) + from_u8(custom_name) + wxString(")", wxConvUTF8);
             }
+            // [multi-printer] its machine
+            plate_full_name += from_u8(MultiPrinterGui::plate_machine_suffix(wxGetApp().plater()->get_partplate_list().get_plate(plate_idx)));
             plate->SetName(plate_full_name);
         }
     }

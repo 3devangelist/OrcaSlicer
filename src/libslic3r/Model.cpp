@@ -157,6 +157,7 @@ Model& Model::assign_copy(const Model &rhs)
     this->texture_mesh = rhs.texture_mesh;
 
     this->cad_recipe = rhs.cad_recipe;
+    this->multi_printer_plates = rhs.multi_printer_plates; // [multi-printer]
 
     return *this;
 }
@@ -203,6 +204,7 @@ Model& Model::assign_copy(Model &&rhs)
     this->profile_info = rhs.profile_info;
     rhs.profile_info.reset();
     this->cad_recipe = std::move(rhs.cad_recipe);
+    this->multi_printer_plates = std::move(rhs.multi_printer_plates); // [multi-printer]
     return *this;
 }
 

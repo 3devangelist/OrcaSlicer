@@ -116,6 +116,8 @@ namespace pt = boost::property_tree;
 
 #include <fast_float/fast_float.h>
 #include "libslic3r/ProjectTask.hpp"
+#include "libslic3r/MultiPrinter/PlateOverrides.hpp" // [multi-printer]
+#include "libslic3r/MultiPrinter/PlatePresetsFile.hpp" // [multi-printer]
 
 // Slightly faster than sprintf("%.9g"), but there is an issue with the karma floating point formatter,
 // https://github.com/boostorg/spirit/pull/586
@@ -2058,6 +2060,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                         if (mz_zip_reader_extract_to_mem(&archive, stat.m_file_index, buf.data(), buf.size(), 0))
                             model.cad_recipe = std::move(buf);
                     }
+                }
+                else if (boost::algorithm::iequals(name, MultiPrinter::PLATE_PRESETS_FILE)) {
+                    MultiPrinter::read_plate_presets_file(archive, stat, model); // [multi-printer]
                 }
                 else if (boost::algorithm::iequals(name, CUT_INFORMATION_FILE)) {
                     // extract object cut info
@@ -4735,6 +4740,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
             {
                 m_curr_plater->pattern_bbox_file = value;
             }
+            else if (m_curr_plater && MultiPrinter::read_plate_override(m_curr_plater->config, key, value)) {} // [multi-printer] per-plate process settings
             else if (key == INSTANCEID_ATTR)
             {
                 m_curr_instance.instance_id = atoi(value.c_str());
@@ -6697,6 +6703,12 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 return false;
             }
 
+            if (!MultiPrinter::add_plate_presets_file(archive, model)) { // [multi-printer]
+                add_error("Unable to add the plates' printer settings to archive");
+                close_zip_writer(&archive);
+                return false;
+            }
+
             // BBS progress point
             /*BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ":" <<__LINE__ << boost::format("export 3mf EXPORT_STAGE_ADD_LAYER_RANGE\n");
             if (proFn) {
@@ -8533,6 +8545,8 @@ bool _BBS_3MF_Exporter::_add_model_config_file_to_archive(mz_zip_archive& archiv
                     }
                     stream << "\"/>\n";
                 }
+
+                MultiPrinter::write_plate_overrides(stream, plate_data->config, "    "); // [multi-printer] per-plate process settings
 
                 if (save_gcode)
                     stream << "    <" << METADATA_TAG << " " << KEY_ATTR << "=\"" << GCODE_FILE_ATTR << "\" " << VALUE_ATTR << "=\"" << std::boolalpha << xml_escape(plate_data->gcode_file) << "\"/>\n";
