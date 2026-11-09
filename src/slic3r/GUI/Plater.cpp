@@ -15423,12 +15423,21 @@ void Plater::priv::set_bed_shape(const Pointfs       &shape,
         Vec3d min = bed.printable_bounding_box().min;
         double z = config->opt_float("printable_height");
 
+        const bool objects_follow = MultiPrinterGui::objects_follow_plates(); // [multi-printer] objects stay on their plate
         partplate_list.reset_size(max.x() - min.x() - Bed3D::Axes::DefaultTipRadius, max.y() - min.y() - Bed3D::Axes::DefaultTipRadius, z,
-                                  true, false, MultiPrinterGui::objects_follow_plates()); // [multi-printer] objects stay on their plate
-        if (plate_layout_changed) partplate_list.update_all_plates_pos_and_size(true, false, true); // [multi-printer] rows changed
+                                  true, false, objects_follow);
+        if (plate_layout_changed) partplate_list.update_all_plates_pos_and_size(objects_follow, false, true); // [multi-printer] rows changed
         partplate_list.set_shapes(shape, exclude_areas, wrapping_exclude_areas, extruder_areas, extruder_heights, custom_texture, height_to_lid, height_to_rod);
-        // [multi-printer] reset_size assigned objects to plates before the plates got their new shapes
-        if (MultiPrinterGui::objects_follow_plates()) partplate_list.reload_all_objects();
+        // [multi-printer] reassign objects now that the plates have their new shapes, and register the
+        // rebuilt plate meshes for mouse picking (as the old-3MF path above does), so picking never
+        // uses the meshes set_shapes just replaced
+        if (MultiPrinterGui::plate_layout_enabled()) {
+            partplate_list.reload_all_objects();
+            if (view3D) {
+                view3D->get_canvas3d()->remove_raycasters_for_picking(SceneRaycaster::EType::Bed);
+                partplate_list.register_raycasters_for_picking(*view3D->get_canvas3d());
+            }
+        }
 
         Vec2d new_shape_position = partplate_list.get_current_shape_position();
         if (shape_position != new_shape_position)
@@ -20979,7 +20988,7 @@ int Plater::export_3mf(const boost::filesystem::path& output_path, SaveStrategy 
     // modify model
     publish(p->model, strategy);
 
-    MultiPrinterGui::ProjectSaveScope multi_printer_save(*this); // [multi-printer] project's set + plates' sets
+    MultiPrinterGui::ProjectSaveScope multi_printer_save(*this, (strategy & SaveStrategy::Backup) != 0); // [multi-printer] project's set + plates' sets
     DynamicPrintConfig cfg = wxGetApp().preset_bundle->full_config_secure();
     const std::string path_u8 = into_u8(path);
     wxBusyCursor wait;

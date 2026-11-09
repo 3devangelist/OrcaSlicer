@@ -66,6 +66,10 @@ bool is_swapping_presets();
 // bed), so that they stay on the plate they were on. Upstream leaves them where they are.
 bool objects_follow_plates();
 
+// True when the feature is on: plates may have their own beds, so objects are reassigned to plates after
+// every bed change.
+bool plate_layout_enabled();
+
 // The printer settings a plate uses and their preset name: the PresetBundle's when the plate's set is the
 // one loaded in it (or `plate` is nullptr: a plate about to be added from the current one), otherwise the
 // plate's stored set.
@@ -92,10 +96,12 @@ void paste_plate_settings(Plater& plater, PartPlate* plate);
 // While a project file is written: the PresetBundle holds the project's set (so project_settings.config
 // is what plates without their own set use, and what upstream OrcaSlicer opens), and
 // Model::multi_printer_plates holds the plates' own sets as JSON. The plate's set is back afterwards.
+// Plates in rows per printer are laid out on upstream's grid while the file is written, except for the
+// automatic backups (every few seconds, read back only by this fork): those keep the rows and say so.
 class ProjectSaveScope
 {
 public:
-    explicit ProjectSaveScope(Plater& plater);
+    ProjectSaveScope(Plater& plater, bool backup);
     ~ProjectSaveScope();
     ProjectSaveScope(const ProjectSaveScope&)            = delete;
     ProjectSaveScope& operator=(const ProjectSaveScope&) = delete;
@@ -113,8 +119,10 @@ void on_project_loaded(Plater& plater, const std::string& plates_json);
 void on_project_reset();
 
 // The JSON stored in the 3MF, and back. Exposed for tests.
-std::string sets_to_json(const std::map<int, PresetSnapshot>& sets_by_plate_index);
+// `rows_layout`: the objects were written where the rows per printer put their plates (backups).
+std::string sets_to_json(const std::map<int, PresetSnapshot>& sets_by_plate_index, bool rows_layout = false);
 std::map<int, PresetSnapshot> sets_from_json(const std::string& json);
+bool json_has_rows_layout(const std::string& json);
 
 // Whether the filament clamp after a filament-count change may touch this object: only objects on
 // plates that use the active set, never during a swap.

@@ -2,6 +2,7 @@
 
 #include "PlatePresets.hpp"
 
+#include "PlateLayout.hpp"
 #include "PlateSettings.hpp"
 
 #include "libslic3r/Model.hpp"
@@ -224,7 +225,19 @@ void on_plate_selected(Plater& plater, PartPlate* plate)
 
 bool is_swapping_presets() { return registry().swapping; }
 
-bool objects_follow_plates() { return plate_process_settings_enabled(); }
+namespace {
+// While a file saved with the rows layout is opened: its objects already sit where the rows put their
+// plates, so the plates move to the rows without carrying objects along.
+bool& opening_rows_file()
+{
+    static bool b = false;
+    return b;
+}
+} // namespace
+
+bool objects_follow_plates() { return plate_process_settings_enabled() && !opening_rows_file(); }
+
+bool plate_layout_enabled() { return plate_process_settings_enabled(); }
 
 const DynamicPrintConfig& plate_printer_config(const PartPlate* plate, std::string& preset_name)
 {
@@ -396,7 +409,13 @@ DynamicPrintConfig config_from_json(const nlohmann::json& in)
 
 } // namespace
 
-std::string sets_to_json(const std::map<int, PresetSnapshot>& sets_by_plate_index)
+bool json_has_rows_layout(const std::string& json)
+{
+    const nlohmann::json root = nlohmann::json::parse(json, nullptr, false);
+    return !root.is_discarded() && root.is_object() && root.value("layout", std::string()) == "rows";
+}
+
+std::string sets_to_json(const std::map<int, PresetSnapshot>& sets_by_plate_index, bool rows_layout)
 {
     nlohmann::json plates = nlohmann::json::array();
     for (const auto& [index, set] : sets_by_plate_index) {
@@ -418,7 +437,10 @@ std::string sets_to_json(const std::map<int, PresetSnapshot>& sets_by_plate_inde
                           {"project_config", config_to_json(set.project_config)},
                           {"extruder_ams_counts", ams}});
     }
-    return nlohmann::json{{"version", 1}, {"plates", plates}}.dump(1);
+    nlohmann::json root{{"version", 1}, {"plates", plates}};
+    if (rows_layout)
+        root["layout"] = "rows";
+    return root.dump(1);
 }
 
 std::map<int, PresetSnapshot> sets_from_json(const std::string& json)
@@ -463,7 +485,7 @@ struct ProjectSaveScope::Impl
     const PartPlate*                                      swapped_out = nullptr; // the plate whose set is put back
 };
 
-ProjectSaveScope::ProjectSaveScope(Plater& plater)
+ProjectSaveScope::ProjectSaveScope(Plater& plater, bool backup)
 {
     // Off: leave Model::multi_printer_plates as loaded, so a project's sets survive a save.
     if (!plate_process_settings_enabled())
@@ -473,8 +495,11 @@ ProjectSaveScope::ProjectSaveScope(Plater& plater)
     m_impl         = new Impl;
     m_impl->plater = &plater;
     // Objects are written where upstream's grid puts their plates, so upstream OrcaSlicer opens the
-    // file with every object on its plate (PlateLayout.cpp).
-    suspend_plate_layout(plater, true);
+    // file with every object on its plate (PlateLayout.cpp). Not for backups: no plate moves every few
+    // seconds while the user works.
+    const bool rows_layout = backup && layout_active(plater.get_partplate_list());
+    if (!backup)
+        suspend_plate_layout(plater, true);
     if (r.plate_sets.empty()) {
         plater.model().multi_printer_plates.clear();
         return;
@@ -485,7 +510,7 @@ ProjectSaveScope::ProjectSaveScope(Plater& plater)
     std::map<int, PresetSnapshot> by_index;
     for (const auto& [plate, set] : r.plate_sets)
         by_index[const_cast<PartPlate*>(plate)->get_index()] = set; // get_index() is not const upstream
-    plater.model().multi_printer_plates = sets_to_json(by_index);
+    plater.model().multi_printer_plates = sets_to_json(by_index, rows_layout);
     // The project's presets in the 3MF (what upstream Orca opens) are the first plate's.
     const PartPlate* first = plater.get_partplate_list().get_plate(0);
     if (const auto it = r.plate_sets.find(first); it != r.plate_sets.end()) {
@@ -523,13 +548,17 @@ void on_project_loaded(Plater& plater, const std::string& plates_json)
             r.plate_sets[plates.get_plate(index)] = std::move(set);
     // The bundle holds the project's set now. Swap in the current plate's set once the loading code,
     // which may still refresh the presets, has finished.
-    wxGetApp().CallAfter([]() {
+    const bool rows_file = json_has_rows_layout(plates_json);
+    wxGetApp().CallAfter([rows_file]() {
         Plater* p = wxGetApp().plater();
         if (p == nullptr)
             return;
+        opening_rows_file() = rows_file;
         on_plate_selected(*p, p->get_partplate_list().get_curr_plate());
-        // The file holds upstream's grid: lay the plates out in rows per printer, objects moving along.
+        // Lay the plates out in rows per printer: from upstream's grid the objects move along; from a
+        // backup written with the rows they are already in place.
         p->set_bed_shape();
+        opening_rows_file() = false;
     });
 }
 
