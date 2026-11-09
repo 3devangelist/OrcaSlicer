@@ -1,4 +1,5 @@
 #include "FillBedJob.hpp"
+#include "slic3r/GUI/MultiPrinter/PlateLayout.hpp" // [multi-printer]
 
 #include "libslic3r/Model.hpp"
 #include "libslic3r/ClipperUtils.hpp"
@@ -70,6 +71,7 @@ void FillBedJob::prepare()
     if (model_object->instances.empty()) return;
 
     const Slic3r::DynamicPrintConfig& global_config = wxGetApp().preset_bundle->full_config();
+    const bool rows_layout = MultiPrinterGui::layout_active(plate_list); // [multi-printer]
     m_selected.reserve(model_object->instances.size());
     for (size_t oidx = 0; oidx < model.objects.size(); ++oidx)
     {
@@ -99,8 +101,13 @@ void FillBedJob::prepare()
                         ap.itemid = m_unselected.size();
                         ap.row = cur_plate_index / plate_cols;
                         ap.col = cur_plate_index % plate_cols;
+                        if (rows_layout) { // [multi-printer] the plate's own origin
+                            ap.translation(X) -= scaled<double>(plate->get_origin().x());
+                            ap.translation(Y) -= scaled<double>(plate->get_origin().y());
+                        } else {
                         ap.translation(X) -= bed_stride_x(m_plater) * ap.col;
                         ap.translation(Y) += bed_stride_y(m_plater) * ap.row;
+                        }
                         m_unselected.emplace_back(ap);
                     }
                     else
@@ -119,8 +126,13 @@ void FillBedJob::prepare()
                     ap.itemid = m_unselected.size();
                     ap.row = cur_plate_index / plate_cols;
                     ap.col = cur_plate_index % plate_cols;
+                    if (rows_layout) { // [multi-printer] the plate's own origin
+                        ap.translation(X) -= scaled<double>(plate->get_origin().x());
+                        ap.translation(Y) -= scaled<double>(plate->get_origin().y());
+                    } else {
                     ap.translation(X) -= bed_stride_x(m_plater) * ap.col;
                     ap.translation(Y) += bed_stride_y(m_plater) * ap.row;
+                    }
                     m_unselected.emplace_back(ap);
                 }
                 else
@@ -378,8 +390,14 @@ void FillBedJob::finalize(bool canceled, std::exception_ptr &eptr)
             if (m_selected.size() <= 100) {
                 ap.row = ap.bed_idx / plate_cols;
                 ap.col = ap.bed_idx % plate_cols;
+                if (PartPlate* target = plate_list.get_plate(ap.bed_idx);
+                    target != nullptr && MultiPrinterGui::layout_active(plate_list)) { // [multi-printer] the plate's own origin
+                    ap.translation(X) += scaled<double>(target->get_origin().x());
+                    ap.translation(Y) += scaled<double>(target->get_origin().y());
+                } else {
                 ap.translation(X) += bed_stride_x(m_plater) * ap.col;
                 ap.translation(Y) -= bed_stride_y(m_plater) * ap.row;
+                }
             }
 
             ap.apply();

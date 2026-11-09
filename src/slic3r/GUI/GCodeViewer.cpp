@@ -1,5 +1,6 @@
 #include "libslic3r/libslic3r.h"
 #include "GCodeViewer.hpp"
+#include "MultiPrinter/PlateSummary.hpp" // [multi-printer]
 
 #include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/Print.hpp"
@@ -3658,8 +3659,11 @@ void GCodeViewer::render_all_plates_stats(const std::vector<const GCodeProcessor
 
     // item
     {
+        // [multi-printer] plates of several printers/filaments: the slot rows would mix materials;
+        // the summary by real filament and by machine is shown below instead
+        const bool several_sets = MultiPrinterGui::plates_use_several_sets();
         size_t i = 0;
-        for (auto it = model_volume_of_extruders_all_plates.begin(); it != model_volume_of_extruders_all_plates.end(); it++) {
+        for (auto it = model_volume_of_extruders_all_plates.begin(); !several_sets && it != model_volume_of_extruders_all_plates.end(); it++) {
             if (i < model_used_filaments_m_all_plates.size() && i < model_used_filaments_g_all_plates.size()) {
                 std::vector<std::pair<std::string, float>> columns_offsets;
                 columns_offsets.push_back({ std::to_string(it->first + 1), offsets[_u8L("Filament")]});
@@ -3728,6 +3732,8 @@ void GCodeViewer::render_all_plates_stats(const std::vector<const GCodeProcessor
         ::sprintf(buf, "%.2f", total_cost_all_plates);
         imgui.text(buf);
 
+        // [multi-printer] by real filament, by machine, and when everything is done
+        MultiPrinterGui::render_all_plates_summary(imgui, static_cast<size_t>(m_viewer.get_time_mode()));
     }
     ImGui::End();
     ImGui::PopStyleColor(6);

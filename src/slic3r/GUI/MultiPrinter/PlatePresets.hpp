@@ -57,6 +57,9 @@ struct PresetSnapshot
     std::vector<std::map<int, int>>   extruder_ams_counts;
     std::map<int, DynamicPrintConfig> filament_ams_list;
     MachineBinding                    machine; // kept by refreshes from the PresetBundle
+    // The user presets the set uses (printer, process, filament slots): saved in the project, so a
+    // computer without them gets them as project presets. Name -> (Preset::Type, settings).
+    std::map<std::string, std::pair<int, DynamicPrintConfig>> user_presets;
 };
 
 PresetSnapshot capture_presets(const PresetBundle& bundle);

@@ -1,4 +1,5 @@
 #include "ArrangeJob.hpp"
+#include "slic3r/GUI/MultiPrinter/PlateLayout.hpp" // [multi-printer]
 
 #include "libslic3r/BuildVolume.hpp"
 #include "libslic3r/SVG.hpp"
@@ -647,6 +648,15 @@ void ArrangeJob::prepare()
     Model::setPrintSpeedTable(config, print_config);
 
     int state = m_plater->get_prepare_state();
+    // [multi-printer] plates of different printers are arranged one at a time, each with its own bed:
+    // arranging all plates at once would pack every plate with the current plate's bed
+    if (state == Job::JobPrepareState::PREPARE_STATE_DEFAULT &&
+        MultiPrinterGui::layout_active(m_plater->get_partplate_list())) {
+        state = Job::JobPrepareState::PREPARE_STATE_MENU;
+        m_plater->get_notification_manager()->push_notification(NotificationType::CustomNotification,
+            NotificationManager::NotificationLevel::RegularNotificationLevel,
+            _u8L("The plates use different printers: only the current plate was arranged. Select another plate to arrange it."));
+    }
     if (state == Job::JobPrepareState::PREPARE_STATE_DEFAULT) {
         only_on_partplate = false;
         prepare_all();
