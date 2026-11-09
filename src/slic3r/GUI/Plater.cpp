@@ -15357,7 +15357,8 @@ void Plater::priv::set_bed_shape(const Pointfs       &shape,
         Vec3d min = bed.printable_bounding_box().min;
         double z = config->opt_float("printable_height");
 
-        partplate_list.reset_size(max.x() - min.x() - Bed3D::Axes::DefaultTipRadius, max.y() - min.y() - Bed3D::Axes::DefaultTipRadius, z);
+        partplate_list.reset_size(max.x() - min.x() - Bed3D::Axes::DefaultTipRadius, max.y() - min.y() - Bed3D::Axes::DefaultTipRadius, z,
+                                  true, false, MultiPrinterGui::objects_follow_plates()); // [multi-printer] objects stay on their plate
         partplate_list.set_shapes(shape, exclude_areas, wrapping_exclude_areas, extruder_areas, extruder_heights, custom_texture, height_to_lid, height_to_rod);
 
         Vec2d new_shape_position = partplate_list.get_current_shape_position();

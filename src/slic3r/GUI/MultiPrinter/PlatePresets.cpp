@@ -96,6 +96,28 @@ const PartPlate* owner_of(const PartPlate* plate)
     return r.plate_sets.count(plate) != 0 ? plate : nullptr;
 }
 
+// Owner's decision (2026-11-09): every plate has its own printer, process and filaments, so choosing a
+// printer changes only the selected plate. A plate without a set yet takes the one in the bundle now.
+// `holder` is the plate that uses the bundle's set when that is the project's set: it becomes the
+// active plate, unless it already had a set of its own (then the bundle stays the project's set).
+void give_every_plate_a_set(Plater& plater, const PartPlate* holder)
+{
+    Registry&      r      = registry();
+    PartPlateList& plates = plater.get_partplate_list();
+    bool           missing = false;
+    for (int i = 0; i < plates.get_plate_count(); ++i)
+        missing |= r.plate_sets.count(plates.get_plate(i)) == 0;
+    if (!missing)
+        return;
+    const bool           holder_had_set = r.plate_sets.count(holder) != 0;
+    const PresetSnapshot now            = capture_presets(*wxGetApp().preset_bundle);
+    active_set_storage()                = now;
+    for (int i = 0; i < plates.get_plate_count(); ++i)
+        r.plate_sets.emplace(plates.get_plate(i), now); // keeps the sets plates already have
+    if (r.active == nullptr && holder != nullptr && !holder_had_set)
+        r.active = holder;
+}
+
 } // namespace
 
 PresetSnapshot capture_presets(const PresetBundle& bundle)
@@ -185,6 +207,7 @@ void on_plate_selected(Plater& plater, PartPlate* plate)
         return;
     prune(plater);
     Registry& r = registry();
+    give_every_plate_a_set(plater, plate);
     const PartPlate* new_owner = owner_of(plate);
     if (new_owner == r.active)
         return; // same set: nothing to swap
@@ -200,6 +223,8 @@ void on_plate_selected(Plater& plater, PartPlate* plate)
 }
 
 bool is_swapping_presets() { return registry().swapping; }
+
+bool objects_follow_plates() { return plate_process_settings_enabled(); }
 
 namespace {
 
@@ -244,6 +269,7 @@ void on_plate_added(Plater& plater, PartPlate* source, PartPlate* added)
     prune(plater);
     *added->config() = *source->config();
     Registry& r = registry();
+    give_every_plate_a_set(plater, source);
     if (const PresetSnapshot* set = stored_set(source)) {
         r.plate_sets[added] = *set;
         // The new plate is selected next without a swap: the bundle already holds this same set.
@@ -257,6 +283,7 @@ void copy_plate_settings(Plater& plater, PartPlate* plate)
     if (plate == nullptr)
         return;
     prune(plater);
+    give_every_plate_a_set(plater, plater.get_partplate_list().get_curr_plate());
     PlateClipboard& c = clipboard();
     c.has          = true;
     c.plate_config = *plate->config();
@@ -273,6 +300,7 @@ void paste_plate_settings(Plater& plater, PartPlate* plate)
     if (plate == nullptr || !c.has || !plate_process_settings_enabled())
         return;
     prune(plater);
+    give_every_plate_a_set(plater, plater.get_partplate_list().get_curr_plate());
     plater.take_snapshot("Paste plate settings");
     *plate->config() = c.plate_config;
     Registry& r = registry();
@@ -288,9 +316,8 @@ void paste_plate_settings(Plater& plater, PartPlate* plate)
             load_into_app(plater, c.set);
             r.swapping = false;
         }
-    } else {
-        set_plate_own_presets(plater, plate, false);
     }
+    // Every plate keeps a set of its own: a clipboard without one leaves the plate's set as it is.
     after_plate_settings_changed(plater, plate);
 }
 
@@ -310,17 +337,13 @@ void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent)
     PartPlate* plate  = plater->get_partplate_list().get_selected_plate();
     if (plate == nullptr)
         return;
-    const bool own = plate_has_own_presets(*plater, plate);
-    append_menu_item(
-        menu, wxID_ANY, own ? use_project : use_own, "",
-        [plate, own](wxCommandEvent&) { set_plate_own_presets(*wxGetApp().plater(), plate, !own); }, "", nullptr,
-        []() { return true; }, parent, int(pos));
+    // Every plate has its own set (see give_every_plate_a_set), so there is no "own / project's" choice.
     append_menu_item(
         menu, wxID_ANY, copy, "", [plate](wxCommandEvent&) { copy_plate_settings(*wxGetApp().plater(), plate); }, "",
-        nullptr, []() { return true; }, parent, int(pos) + 1);
+        nullptr, []() { return true; }, parent, int(pos));
     append_menu_item(
         menu, wxID_ANY, paste, "", [plate](wxCommandEvent&) { paste_plate_settings(*wxGetApp().plater(), plate); }, "",
-        nullptr, []() { return can_paste_plate_settings(); }, parent, int(pos) + 2);
+        nullptr, []() { return can_paste_plate_settings(); }, parent, int(pos) + 1);
 }
 
 namespace {
@@ -437,7 +460,13 @@ ProjectSaveScope::ProjectSaveScope(Plater& plater)
     for (const auto& [plate, set] : r.plate_sets)
         by_index[const_cast<PartPlate*>(plate)->get_index()] = set; // get_index() is not const upstream
     plater.model().multi_printer_plates = sets_to_json(by_index);
-    if (r.active != nullptr && r.has_project_set) {
+    // The project's presets in the 3MF (what upstream Orca opens) are the first plate's.
+    const PartPlate* first = plater.get_partplate_list().get_plate(0);
+    if (const auto it = r.plate_sets.find(first); it != r.plate_sets.end()) {
+        r.project_set     = it->second;
+        r.has_project_set = true;
+    }
+    if (r.active != nullptr && r.active != first && r.has_project_set) {
         m_impl             = new Impl;
         m_impl->no_export  = std::make_unique<PresetBundle::SelectionExportBlocker>(bundle);
         m_impl->swapped_out = r.active;
