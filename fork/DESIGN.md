@@ -25,15 +25,17 @@ needs a restart). With it off, OrcaSlicer behaves as upstream.
 |---|---|---|
 | Any process setting can be overridden on a plate (plate tab shows every process page); objects resolve global → plate → object; plate row and 3D plate icon show "changed" | `src/slic3r/GUI/MultiPrinter/PlateSettings.*`, hooks in `Tab.cpp`, `PartPlate.cpp` | MCP: plate layer height 0.12 over global 0.2 slices to 166 layers; object 0.16 on top gives 125 |
 | Plate overrides saved in the 3MF plate block as `plate_override:<key>` | `src/libslic3r/MultiPrinter/PlateOverrides.*`, hooks in `bbs_3mf.cpp` | `tests/libslic3r/test_plate_overrides.cpp` |
-| A plate can own a printer + process + filaments set (plate right-click: "Use own printer, process and filaments"); selecting the plate swaps its set into the PresetBundle, so the sidebar, tabs and slicing use it | `src/slic3r/GUI/MultiPrinter/PlatePresets.*`, hooks in `Plater.cpp` (`select_plate`, `select_plate_by_hover_id`), `GUI_Factories.cpp` | MCP: plate 1 G-code `printer_settings_id = Printer A`, plate 2 `Printer B` |
+| Every plate has its own printer + process + filaments set (owner's decision after testing, 2026-11-09: choosing a printer changes only the selected plate; there is no "use the project's set" choice). A plate without a set yet takes the one in use when first needed (`give_every_plate_a_set`). Selecting the plate swaps its set into the PresetBundle, so the sidebar, tabs and slicing use it. The 3MF's project presets are the first plate's | `src/slic3r/GUI/MultiPrinter/PlatePresets.*`, hooks in `Plater.cpp` (`select_plate`, `select_plate_by_hover_id`), `GUI_Factories.cpp` | MCP: plate 1 G-code `printer_settings_id = Printer A`, plate 2 `Printer B`; plate 2 → X2D leaves plate 1 on A1 mini |
+| Objects stay on their plate when a plate's printer has another bed size: plates are resized and moved and their objects move with them (same place relative to the plate centre) | `reset_size(..., move_instances)` in `PartPlate.*` (default off = upstream), hook in `Plater::priv::set_bed_shape`, which also reassigns objects after `set_shapes` | MCP: A1 mini (180) ↔ X2D (256), a cube on each plate stays on its plate both ways |
 | Filament-count changes only clamp objects on plates that use the active set | hooks in `Plater.cpp`, `GUI_ObjectList.cpp` | not tested yet |
 | Plate sets saved in `Metadata/multi_printer_plates.json`; while saving, the bundle holds the project's set so `project_settings.config` stays the project's printer; on open the sets go back to their plates | `src/libslic3r/MultiPrinter/PlatePresetsFile.*`, `Model::multi_printer_plates`, hooks in `bbs_3mf.cpp`, `Plater.cpp` | `test_plate_overrides.cpp` (file round trip); MCP: save with plate 2 on Printer B, reopen, plates keep A / B |
 
 | New plate ("Add plate") copies the current plate: plate options, process overrides and its own set if any | `on_plate_added` in `PlatePresets.cpp`, hook in `Plater::add_plate` | MCP: plate 1 on Printer B "by object" → new plate is Printer B "by object" |
-| Plate right-click "Copy plate settings" / "Paste plate settings": everything, including back to the project's set | `copy_plate_settings` / `paste_plate_settings` in `PlatePresets.cpp` | MCP: paste plate 1 (B) onto a project-set plate → B; paste a project-set plate onto plate 1 → A |
+| Plate right-click "Copy plate settings" / "Paste plate settings": everything, including the printer set | `copy_plate_settings` / `paste_plate_settings` in `PlatePresets.cpp` | MCP: paste plate 1 (B) onto a project-set plate → B; paste a project-set plate onto plate 1 → A |
 
 Not done yet: user presets used only by other plates are not embedded in the
-3MF (another computer needs them installed); plates of different bed sizes;
+3MF (another computer needs them installed); plates of different bed sizes
+shown at the same time (all plates still take the selected plate's bed size);
 "all plates" print/send actions with several printers; undo of set changes;
 a test of the filament clamp guard.
 Selecting a plate re-slices it after a set swap, even when nothing changed.
