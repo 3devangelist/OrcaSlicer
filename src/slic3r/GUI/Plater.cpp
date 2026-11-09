@@ -13434,9 +13434,11 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
     Slic3r::put_other_changes();
 
     // update slice state and set bedtype default for 3rd-party printer
+    // [multi-printer] not when a plate's own set is swapped in: the other plates' presets did not change
     auto plate_list = partplate_list.get_plate_list();
     for (auto plate : plate_list) {
-         plate->update_slice_result_valid_state(false);
+         if (!MultiPrinterGui::is_swapping_presets())
+             plate->update_slice_result_valid_state(false);
     }
 }
 

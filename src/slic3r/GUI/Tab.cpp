@@ -124,6 +124,7 @@
 #include <unordered_set>
 #include "slic3r/GUI/GUI_Utils.hpp"
 #include "slic3r/GUI/MultiPrinter/PlateSettings.hpp" // [multi-printer]
+#include "slic3r/GUI/MultiPrinter/PlatePresets.hpp"  // [multi-printer]
 
 namespace Slic3r {
 
@@ -2643,9 +2644,11 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
     m_page_view->GetParent()->Layout();
 
     // ORCA also update states of plates for plates toolbar. same method exist on Plater::priv::on_select_preset()
+    // [multi-printer] not while a plate's own set is swapped in: the other plates' presets did not change
     auto& plate_list = wxGetApp().plater()->get_partplate_list();
-    for (auto plate : plate_list.get_plate_list())
-        plate->update_slice_result_valid_state(false);
+    if (!MultiPrinterGui::is_swapping_presets())
+        for (auto plate : plate_list.get_plate_list())
+            plate->update_slice_result_valid_state(false);
 }
 
 void Tab::show_timelapse_warning_dialog() {
@@ -2849,9 +2852,11 @@ void Tab::on_presets_changed()
     wxGetApp().plater()->update_project_dirty_from_presets();
 
     // ORCA also update states of plates for plates toolbar. same method exist on Plater::priv::on_select_preset()
+    // [multi-printer] not while a plate's own set is swapped in: the other plates' presets did not change
     auto& plate_list = wxGetApp().plater()->get_partplate_list();
-    for (auto plate : plate_list.get_plate_list())
-        plate->update_slice_result_valid_state(false);
+    if (!MultiPrinterGui::is_swapping_presets())
+        for (auto plate : plate_list.get_plate_list())
+            plate->update_slice_result_valid_state(false);
 }
 
 void Tab::build_preset_description_line(ConfigOptionsGroup* optgroup)
