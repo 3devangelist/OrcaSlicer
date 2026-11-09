@@ -532,6 +532,8 @@ set(SLIC3R_GUI_SOURCES
     GUI/ParamsPanel.hpp
     GUI/PartPlate.cpp
     GUI/PartPlate.hpp
+    GUI/MultiPrinter/PlateLayout.cpp # [multi-printer]
+    GUI/MultiPrinter/PlateLayout.hpp # [multi-printer]
     GUI/MultiPrinter/PlatePresets.cpp # [multi-printer]
     GUI/MultiPrinter/PlatePresets.hpp # [multi-printer]
     GUI/MultiPrinter/PlateSettings.cpp # [multi-printer]
