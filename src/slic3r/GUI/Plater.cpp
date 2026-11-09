@@ -7711,6 +7711,7 @@ struct Plater::priv
     void on_action_open_project(SimpleEvent&);
     void on_action_slice_plate(SimpleEvent&);
     void on_action_slice_all(SimpleEvent&);
+    void update_slice_all_extruder_params(); // [multi-printer]
     void on_action_print_plate(SimpleEvent&);
     void open_machine_select_dialog(int plate_idx, PrintFromType print_type = PrintFromType::FROM_NORMAL);
     void on_action_print_all(SimpleEvent&);
@@ -12948,6 +12949,7 @@ void Plater::priv::set_current_panel(wxPanel* panel, bool no_slice)
                     //reset current plate to the slicing plate
                     int plate_index = this->background_process.get_current_plate()->get_index();
                     this->partplate_list.select_plate(plate_index);
+                    MultiPrinterGui::on_plate_selected(*q, partplate_list.get_curr_plate()); // [multi-printer] the plate's presets
                 }
             }
             else if (only_has_gcode_need_preview)
@@ -13886,6 +13888,7 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
         in_slice_request = true;
         ScopeGuard end_request([this] { in_slice_request = false; });
         q->select_plate(m_cur_slice_plate);
+        if (MultiPrinterGui::plate_layout_enabled()) update_slice_all_extruder_params(); // [multi-printer] this plate's printer
         partplate_list.select_plate_view();
         int ret = q->start_next_slice();
         if (ret) {
@@ -14136,6 +14139,19 @@ void Plater::priv::on_action_slice_plate(SimpleEvent&)
 }
 
 //BBS: GUI refactor: slice all
+//BBS update extruder params and speed table before slicing
+// [multi-printer] moved out of on_action_slice_all so it runs for each plate's own printer
+void Plater::priv::update_slice_all_extruder_params()
+{
+    const Slic3r::DynamicPrintConfig& config = wxGetApp().preset_bundle->full_config();
+    auto& print = q->get_partplate_list().get_current_fff_print();
+    auto print_config = print.config();
+    int numExtruders = wxGetApp().preset_bundle->filament_presets.size();
+
+    Model::setExtruderParams(config, numExtruders);
+    Model::setPrintSpeedTable(config, print_config);
+}
+
 void Plater::priv::on_action_slice_all(SimpleEvent&)
 {
     if (q != nullptr) {
@@ -14172,19 +14188,13 @@ void Plater::priv::on_action_slice_all(SimpleEvent&)
             }
         }
 
-        //BBS update extruder params and speed table before slicing
-        const Slic3r::DynamicPrintConfig& config = wxGetApp().preset_bundle->full_config();
-        auto& print = q->get_partplate_list().get_current_fff_print();
-        auto print_config = print.config();
-        int numExtruders = wxGetApp().preset_bundle->filament_presets.size();
-
-        Model::setExtruderParams(config, numExtruders);
-        Model::setPrintSpeedTable(config, print_config);
         m_slice_all = true;
         m_slice_all_only_has_gcode = true;
         m_cur_slice_plate = 0;
         //select plate
         q->select_plate(m_cur_slice_plate);
+        // [multi-printer] moved after select_plate: the plate's own printer and filaments are loaded now
+        update_slice_all_extruder_params();
         q->reslice();
         q->select_view_3D("Preview");
         //BBS: wish to select all plates stats item
