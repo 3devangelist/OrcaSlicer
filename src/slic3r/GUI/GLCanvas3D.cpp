@@ -7,6 +7,7 @@
 #include <imgui.h>
 #include <wx/event.h>
 #include "slic3r/GUI/Event.hpp"
+#include "slic3r/GUI/MultiPrinter/PlateBeds.hpp" // [multi-printer]
 #include <vector>
 #include <utility>
 #include "libslic3r/Slicing.hpp"
@@ -9020,7 +9021,13 @@ void GLCanvas3D::_render_bed(const Transform3d& view_matrix, const Transform3d& 
         // With the other plates hidden, the axes go to the current plate as in Preview.
         m_bed.set_axes_mode(m_main_toolbar.is_enabled() && !_hides_inactive_plates());
     }
+    // [multi-printer] each plate shows its printer's bed model, the Design tab keeps upstream's
+    const bool plates_draw_models = !m_design_canvas && MultiPrinterGui::plate_bed_models_enabled();
+    m_bed.set_model_drawn_elsewhere(plates_draw_models);
     m_bed.render(*this, view_matrix, projection_matrix, bottom, scale_factor, show_axes);
+    if (plates_draw_models)
+        MultiPrinterGui::render_plate_bed_models(view_matrix, projection_matrix, bottom,
+                                                 !m_main_toolbar.is_enabled() || _hides_inactive_plates());
 }
 
 bool GLCanvas3D::_is_below_plate_view_active() const

@@ -126,6 +126,8 @@ private:
     std::vector<std::vector<Vec2d>> m_extruder_shapes;
     std::vector<double> m_extruder_heights;
     bool m_is_dark = false;
+    // [multi-printer] every plate draws its own printer's bed model (MultiPrinter/PlateBeds)
+    bool m_model_drawn_elsewhere = false;
 
 public:
     Bed3D() = default;
@@ -143,6 +145,8 @@ public:
     void set_axes_mode(bool origin);
     void set_axes_origin(const Vec3d& origin) { m_axes.set_origin(origin); }   // Design tab: triad at bed centre
     const Vec2d& get_position() const { return m_position; }
+    // [multi-printer] leave the bed model out: the plates draw theirs (MultiPrinter/PlateBeds)
+    void set_model_drawn_elsewhere(bool elsewhere) { m_model_drawn_elsewhere = elsewhere; }
 
     // Build volume geometry for various collision detection tasks.
     const BuildVolume& build_volume() const { return m_build_volume; }
