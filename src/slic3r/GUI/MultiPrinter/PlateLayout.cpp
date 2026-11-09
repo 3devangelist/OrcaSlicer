@@ -112,14 +112,15 @@ Layout lay_out(const std::vector<Entry>& plates)
         row_of[i]              = size_t(it - rows.begin());
         row_depth[row_of[i]]   = std::max(row_depth[row_of[i]], double(plates[i].geometry.depth));
     }
+    // A plate spans [origin, origin + depth] in Y. Row r ends a gap (a fifth of the row above) under the
+    // row above; with equal beds this is upstream's -row * depth * (1 + gap).
     std::vector<double> row_y(rows.size(), 0.), row_x(rows.size(), 0.);
-    double y = 0.;
-    for (size_t r = 0; r < rows.size(); ++r) {
-        row_y[r] = y;
-        y -= row_depth[r] * (1. + PLATE_GAP);
-    }
+    for (size_t r = 1; r < rows.size(); ++r)
+        row_y[r] = row_y[r - 1] - row_depth[r - 1] * PLATE_GAP - row_depth[r];
     Layout layout;
-    layout.bottom = y;
+    const double last_depth = row_depth.empty() ? 0. : row_depth.back();
+    const double deepest    = row_depth.empty() ? 0. : *std::max_element(row_depth.begin(), row_depth.end());
+    layout.bottom = (rows.empty() ? 0. : row_y.back()) - last_depth * PLATE_GAP - deepest; // room for any bed
     for (size_t i = 0; i < plates.size(); ++i) {
         const size_t r = row_of[i];
         layout.positions.emplace_back(row_x[r], row_y[r]);
