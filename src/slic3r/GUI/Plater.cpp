@@ -15444,9 +15444,10 @@ void Plater::priv::set_bed_shape(const Pointfs       &shape,
         // rebuilt plate meshes for mouse picking (as the old-3MF path above does), so picking never
         // uses the meshes set_shapes just replaced
         if (MultiPrinterGui::plate_layout_enabled()) {
-            // Only when plates moved: reassigning clears every plate's slicing result, and with rows per
-            // printer selecting another plate reloads its bed without moving any plate.
-            if (plate_layout_changed || !MultiPrinterGui::layout_active(partplate_list))
+            // Only when objects did not move with their plates (a file saved with the rows being opened):
+            // objects that moved along are still on the same plates, and reassigning clears every
+            // plate's slicing result (selecting a plate, saving a project).
+            if (!objects_follow)
                 partplate_list.reload_all_objects();
             if (view3D) {
                 view3D->get_canvas3d()->remove_raycasters_for_picking(SceneRaycaster::EType::Bed);
