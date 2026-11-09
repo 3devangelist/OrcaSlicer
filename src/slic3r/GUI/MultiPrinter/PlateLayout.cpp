@@ -31,6 +31,12 @@ bool& suspended()
     return s;
 }
 
+bool& temporary()
+{
+    static bool t = false;
+    return t;
+}
+
 PlateGeometry geometry_of(const DynamicPrintConfig& config)
 {
     PlateGeometry g;
@@ -191,13 +197,19 @@ void suspend_plate_layout(Plater& plater, bool suspend)
         const PlateGeometry       geometry = geometry_of(first);
         const auto*               wrapping = first.option<ConfigOptionPoints>("wrapping_exclude_area");
         suspended()                        = true;
+        temporary()                        = true;
         plater.set_bed_shape(geometry.shape, geometry.exclude_area, wrapping ? wrapping->values : Pointfs(), geometry.height,
                              geometry.extruder_areas, geometry.extruder_heights, "", "");
+        temporary() = false;
     } else if (suspended()) {
         suspended() = false;
+        temporary() = true;
         plater.set_bed_shape(); // back to the rows, sized from the current plate's printer
+        temporary() = false;
     }
 }
+
+bool layout_is_temporary() { return temporary(); }
 
 } // namespace MultiPrinterGui
 } // namespace GUI

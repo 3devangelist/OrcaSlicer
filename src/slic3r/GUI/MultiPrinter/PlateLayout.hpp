@@ -52,6 +52,10 @@ std::optional<PlateGeometry> layout_geometry(PartPlateList& plates, int index);
 // True once each time the plates' printers, beds or order changed since the previous call.
 bool layout_changed(PartPlateList& plates);
 
+// True while the plates are laid out on upstream's grid for a file and back (suspend_plate_layout):
+// a temporary move, so nothing that belongs to the plates (wipe tower positions) may be reset.
+bool layout_is_temporary();
+
 } // namespace MultiPrinterGui
 } // namespace GUI
 } // namespace Slic3r
