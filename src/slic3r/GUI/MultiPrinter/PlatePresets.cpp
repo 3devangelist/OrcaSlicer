@@ -350,7 +350,7 @@ void adapt_moved_objects(Plater& plater, const PartPlate* plate)
         plater.get_notification_manager()->push_notification(
             NotificationType::CustomNotification, NotificationManager::NotificationLevel::RegularNotificationLevel,
             (boost::format(_u8L("%1% is on plate %2% now: filament %3% (%4% %5%) became filament %6% (%7% %8%), the closest one there."))
-             % object->name % (plate->get_index() + 1) % current % was.type % was.colour % best % now.type % now.colour).str());
+             % object->name % (const_cast<PartPlate*>(plate)->get_index() + 1) % current % was.type % was.colour % best % now.type % now.colour).str());
     });
 }
 
