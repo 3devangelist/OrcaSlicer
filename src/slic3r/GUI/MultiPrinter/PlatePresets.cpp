@@ -362,6 +362,17 @@ void adapt_moved_objects(Plater& plater, const PartPlate* plate)
     });
 }
 
+// True when two sets put the same data in the PresetBundle (the machine is not bundle data).
+bool same_bundle_data(const PresetSnapshot& a, const PresetSnapshot& b)
+{
+    auto same = [](const PresetSnapshot::Collection& x, const PresetSnapshot::Collection& y) {
+        return x.selected == y.selected && x.edited == y.edited;
+    };
+    return same(a.printers, b.printers) && same(a.prints, b.prints) && same(a.filaments, b.filaments) &&
+           a.filament_presets == b.filament_presets && a.project_config == b.project_config &&
+           a.extruder_ams_counts == b.extruder_ams_counts && a.filament_ams_list == b.filament_ams_list;
+}
+
 } // namespace
 
 void on_plate_selected(Plater& plater, PartPlate* plate)
@@ -378,8 +389,12 @@ void on_plate_selected(Plater& plater, PartPlate* plate)
     // Keep what was edited in the set that is leaving the bundle, and what its objects printed with.
     refresh_from_bundle(active_set_storage());
     remember_object_filaments(plater, r.active);
-    r.active = new_owner;
-    load_into_app(plater, active_set_storage());
+    // Reloading the presets refreshes every tab and takes most of a second; a plate with the same
+    // printer, process and filaments as the one leaving needs only to become the active one.
+    const PresetSnapshot& leaving = r.active != nullptr ? r.plate_sets[r.active] : r.project_set;
+    r.active                      = new_owner;
+    if (!same_bundle_data(leaving, active_set_storage()))
+        load_into_app(plater, active_set_storage());
     r.swapping = false;
     adapt_moved_objects(plater, plate);
     BOOST_LOG_TRIVIAL(info) << "[multi-printer] plate " << plate->get_index() << " uses "
