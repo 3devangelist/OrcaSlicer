@@ -916,7 +916,8 @@ public:
     ~PartPlateList();
 
     //this may be happened after machine changed
-    void reset_size(int width, int depth, double height, bool reload_objects = true, bool update_shapes = false);
+    void reset_size(int width, int depth, double height, bool reload_objects = true, bool update_shapes = false,
+                    bool move_instances = false); // [multi-printer] move_instances: objects stay on their plate
     //clear all the instances in the plate, but keep the plates
     void clear(bool delete_plates = false, bool release_print_list = false, bool except_locked = false, int plate_index = -1);
     //clear all the instances in the plate, and delete the plates, only keep the first default plate

@@ -62,6 +62,10 @@ void on_plate_selected(Plater& plater, PartPlate* plate);
 // True while a set is being swapped in; code reacting to preset changes must not touch other plates then.
 bool is_swapping_presets();
 
+// True when objects must move with their plate when the bed size changes (a plate's printer has another
+// bed), so that they stay on the plate they were on. Upstream leaves them where they are.
+bool objects_follow_plates();
+
 // Adds (or refreshes) the plate menu items: give the selected plate its own printer, process and
 // filaments (or take them back), and copy / paste plate settings. Does nothing when the feature is off.
 void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent);
