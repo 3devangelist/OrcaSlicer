@@ -77,6 +77,9 @@ std::vector<Entry> entries(PartPlateList& plates, bool with_next)
         e.plate = i < count ? plates.get_plate(i) : nullptr;
         // A plate about to be added copies the current plate, whose set is the one loaded.
         e.geometry = geometry_of(plate_printer_config(e.plate, e.printer));
+        // Owner's decision: one row per machine; plates without one go by printer.
+        if (const MachineBinding machine = plate_machine(e.plate); !machine.empty())
+            e.printer = "machine:" + machine.id;
         out.push_back(std::move(e));
     }
     return out;

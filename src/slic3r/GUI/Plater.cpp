@@ -6741,6 +6741,8 @@ bool Sidebar::is_multifilament()
 }
 
 void Sidebar::deal_btn_sync() {
+    if (!MultiPrinterGui::ensure_plate_machine_selected(*wxGetApp().plater())) // [multi-printer] the plate's machine
+        return;
     m_begin_sync_printer_status = true;
     bool only_external_material;
     // Manual "sync machine" button: is_manual=true so an H2C pops the MultiNozzleSyncDialog to pick a nozzle option.
@@ -13494,6 +13496,9 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
          if (!MultiPrinterGui::is_swapping_presets())
              plate->update_slice_result_valid_state(false);
     }
+    // [multi-printer] the plate's machine follows its printer model
+    if (preset_type == Preset::TYPE_PRINTER)
+        MultiPrinterGui::refresh_current_plate_machine(*q);
 }
 
 void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
@@ -14210,6 +14215,8 @@ void Plater::priv::on_action_print_plate(SimpleEvent&)
         BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << ":received print plate event\n" ;
     }
 
+    if (!MultiPrinterGui::ensure_plate_machine_selected(*q)) // [multi-printer] the plate's machine
+        return;
     PresetBundle& preset_bundle = *wxGetApp().preset_bundle;
     if (preset_bundle.use_bbl_network() || wxGetApp().app_config->get_bool("use_printer_agents")) {
         open_machine_select_dialog(partplate_list.get_curr_plate_index());
@@ -14334,6 +14341,8 @@ int Plater::priv::update_print_required_data(Slic3r::DynamicPrintConfig config, 
 
 void Plater::priv::on_action_send_to_printer(bool isall)
 {
+	if (!isall && !MultiPrinterGui::ensure_plate_machine_selected(*q)) // [multi-printer] the plate's machine
+        return;
 	if (!m_send_to_sdcard_dlg) m_send_to_sdcard_dlg = new SendToPrinterDialog(q);
     if (isall) {
         m_send_to_sdcard_dlg->prepare(PLATE_ALL_IDX);
@@ -14362,7 +14371,16 @@ void Plater::priv::on_action_print_all(SimpleEvent&)
     }
 
     PresetBundle& preset_bundle = *wxGetApp().preset_bundle;
-    if (preset_bundle.use_bbl_network() || wxGetApp().app_config->get_bool("use_printer_agents")) {
+    const bool    bbl_print     = preset_bundle.use_bbl_network() || wxGetApp().app_config->get_bool("use_printer_agents");
+    // [multi-printer] plates of several machines or printers: each plate to its own, one after the other
+    if (MultiPrinterGui::print_plates_one_by_one(*q, [this, bbl_print](int plate_idx) {
+            if (bbl_print)
+                open_machine_select_dialog(plate_idx);
+            else
+                q->send_gcode_legacy(PLATE_CURRENT_IDX, nullptr);
+        }))
+        return;
+    if (bbl_print) {
         open_machine_select_dialog(PLATE_ALL_IDX);
     } else {
         q->send_gcode_legacy(PLATE_ALL_IDX, nullptr);

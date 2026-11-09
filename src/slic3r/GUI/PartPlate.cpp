@@ -120,6 +120,7 @@
 #include "slic3r/GUI/GLModel.hpp"
 #include "libslic3r/MultiPrinter/PlateOverrides.hpp" // [multi-printer]
 #include "MultiPrinter/PlateLayout.hpp"               // [multi-printer]
+#include "MultiPrinter/PlatePresets.hpp"              // [multi-printer]
 #include <nlohmann/json.hpp>
 
 class wxFont;
@@ -4213,6 +4214,9 @@ void PartPlate::generate_plate_name_texture()
 	// generate m_name_texture texture from m_name with generate_from_text_string
 	m_name_texture.reset();
 	auto text = m_name.empty()? _L("Untitled") : from_u8(m_name);
+	// [multi-printer] the plate's machine, so each row shows which machine it is
+	if (const std::string machine = MultiPrinterGui::plate_machine_name(this); !machine.empty())
+		text = m_name.empty() ? from_u8(machine) : text + wxString::FromUTF8(" \xE2\x80\x94 ") + from_u8(machine);
 
     // ORCA also scale font size to prevent low res texture
     int size = wxGetApp().em_unit() * PARTPLATE_EDIT_PLATE_NAME_ICON_SIZE;
