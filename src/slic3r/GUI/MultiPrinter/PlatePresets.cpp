@@ -102,6 +102,14 @@ void load_into_app(Plater& plater, const PresetSnapshot& snapshot)
     wxGetApp().load_current_presets(false, false);
     // Loading the printer re-derives some project settings (TabPrinter::on_preset_loaded).
     bundle.project_config = snapshot.project_config;
+    // Loading the printer also brings back the filament list last used with that printer (upstream's
+    // per-printer memory), which may not be this plate's: put the plate's list back.
+    if (bundle.filament_presets != snapshot.filament_presets) {
+        BOOST_LOG_TRIVIAL(info) << "[multi-printer] the printer brought another filament list back; the plate's list is restored";
+        bundle.filament_presets = snapshot.filament_presets;
+        bundle.project_config   = snapshot.project_config;
+        plater.sidebar().update_presets(Preset::TYPE_FILAMENT);
+    }
     plater.sidebar().update_presets(Preset::TYPE_PRINTER);
     plater.update_project_dirty_from_presets();
 }
