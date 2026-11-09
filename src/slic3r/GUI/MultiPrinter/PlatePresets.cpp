@@ -487,7 +487,10 @@ void refresh_plate_labels(Plater& plater, PartPlate* plate)
 {
     if (plate == nullptr)
         return;
-    plate->generate_plate_name_texture();
+    // The name is an OpenGL texture. While a project opens at startup (a machine is picked before the 3D
+    // view has its OpenGL) it cannot be made yet: the first drawing makes it (render_plate_name_texture).
+    if (GLCanvas3D* canvas = plater.get_view3D_canvas3D(); canvas != nullptr && canvas->is_initialized())
+        plate->generate_plate_name_texture();
     if (ObjectList* list = wxGetApp().obj_list())
         list->GetModel()->SetCurSelectedPlateFullName(plate->get_index(), plate->get_plate_name());
     plater.get_view3D_canvas3D()->set_as_dirty();
