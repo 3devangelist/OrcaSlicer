@@ -3887,7 +3887,11 @@ void Sidebar::update_all_preset_comboboxes(bool update_filament_combos)
         if (!p->plater->is_loading_project()) {
             bool has_changed = reset_bed_type_combox_choices();
             bool flag         = m_begin_sync_printer_status && !has_changed;
-            if (!(flag)) {
+            if (MultiPrinterGui::is_swapping_presets() && preset_bundle.project_config.has("curr_bed_type")) {
+                // [multi-printer] selecting a plate: the plate's set brings its own bed type, not the one last
+                // used with this printer
+                set_bed_type_accord_combox(preset_bundle.project_config.opt_enum<BedType>("curr_bed_type"));
+            } else if (!(flag)) {
                 auto str_bed_type = wxGetApp().app_config->get_printer_setting(wxGetApp().preset_bundle->printers.get_selected_preset_name(),
                                                                                "curr_bed_type");
                 if (!str_bed_type.empty()) {
@@ -15381,8 +15385,14 @@ void Plater::priv::set_bed_shape(const Pointfs       &shape,
     const bool plate_layout_changed = MultiPrinterGui::layout_changed(partplate_list); // [multi-printer] one row per printer
     new_shape |= plate_layout_changed;
     if (new_shape) {
-        if (view3D) view3D->bed_shape_changed();
-        if (preview) preview->bed_shape_changed();
+        if (MultiPrinterGui::is_swapping_presets()) {
+            // [multi-printer] selecting a plate loads its printer: the camera stays where the user put it
+            if (view3D) view3D->plates_count_changed();
+            if (preview && preview->get_canvas3d()) preview->get_canvas3d()->plates_count_changed();
+        } else {
+            if (view3D) view3D->bed_shape_changed();
+            if (preview) preview->bed_shape_changed();
+        }
 
         //BBS: update part plate's size
         // BBS: to be checked
