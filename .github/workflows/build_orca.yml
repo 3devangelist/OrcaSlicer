@@ -21,6 +21,11 @@ on:
           required: false
           type: boolean
           default: false
+        # [fork] fork_test_release.yml: skip the NSIS installer, MSIX, PDB and external regression tests
+        fork-test-release: # [fork]
+          required: false # [fork]
+          type: boolean # [fork]
+          default: false # [fork]
 
 jobs:
   build_orca:
@@ -442,14 +447,14 @@ jobs:
       # PATH also makes cpack use it over the NSIS preinstalled on some images.
       - name: Restore NSIS
         id: nsis-cache
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !vars.SELF_HOSTED && !inputs.fork-test-release # [fork]
         uses: actions/cache/restore@v6
         with:
           path: ${{ runner.temp }}/nsis
           key: nsis-${{ env.NSIS_VERSION }}
 
       - name: Install NSIS
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !vars.SELF_HOSTED && !inputs.fork-test-release # [fork]
         shell: pwsh
         run: |
           dir "C:/Program Files (x86)/Windows Kits/10/Include"
@@ -469,7 +474,7 @@ jobs:
           $nsisDir | Out-File -Append -FilePath $env:GITHUB_PATH -Encoding utf8
 
       - name: Save NSIS
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED && steps.nsis-cache.outputs.cache-hit != 'true'
+        if: runner.os == 'Windows' && !vars.SELF_HOSTED && steps.nsis-cache.outputs.cache-hit != 'true' && !inputs.fork-test-release # [fork]
         uses: actions/cache/save@v6
         with:
           path: ${{ runner.temp }}/nsis
@@ -572,7 +577,7 @@ jobs:
       # NSIS is x86-only; it runs (and the installer it emits runs) under ARM64's
       # x86 emulation, packaging the native arm64 payload from build-arm64.
       - name: Create installer Win
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !vars.SELF_HOSTED && !inputs.fork-test-release # [fork]
         working-directory: ${{ github.workspace }}/${{ env.BUILD_DIR }}
         # Read by scripts/sign_windows.ps1 when CMake wired signing into the installer.
         env:
@@ -613,7 +618,7 @@ jobs:
         run: '"C:/Program Files/7-Zip/7z.exe" a -tzip OrcaSlicer_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}_portable.zip ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer'
 
       - name: Pack PDB
-        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED && !inputs.fork-test-release # [fork]
         working-directory: ${{ github.workspace }}/${{ env.BUILD_DIR }}/src/Release
         shell: cmd
         run: '"C:/Program Files/7-Zip/7z.exe" a -m0=lzma2 -mx9 Debug_PDB_${{ env.ver }}_for_developers_only.7z  *.pdb'
@@ -626,14 +631,14 @@ jobs:
           path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer
 
       - name: Upload artifacts Win installer
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !vars.SELF_HOSTED && !inputs.fork-test-release # [fork]
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_Windows_${{ env.ver }}${{ env.ARCH_SUFFIX }}
           path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer*.exe
 
       - name: Upload artifacts Win PDB
-        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED && !inputs.fork-test-release # [fork]
         uses: actions/upload-artifact@v7
         with:
           name: PDB
@@ -678,7 +683,7 @@ jobs:
           content_type: application/x-msdownload
 
       - name: Build MSIX Store package Win
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !vars.SELF_HOSTED && !inputs.fork-test-release # [fork]
         working-directory: ${{ github.workspace }}
         shell: pwsh
         run: |
@@ -691,7 +696,7 @@ jobs:
             -PublisherDisplayName "${{ vars.ORCA_MSIX_PUBLISHER_DISPLAY_NAME || 'OrcaSlicer' }}"
 
       - name: Upload artifacts Win MSIX
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && !vars.SELF_HOSTED && !inputs.fork-test-release # [fork]
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_Windows_MSIX_${{ env.ver }}${{ env.ARCH_SUFFIX }}
@@ -761,7 +766,7 @@ jobs:
           if-no-files-found: error
 
       - name: Run external slicer regression tests
-        if: runner.os == 'Linux' && inputs.arch != 'aarch64'
+        if: runner.os == 'Linux' && inputs.arch != 'aarch64' && !inputs.fork-test-release # [fork]
         timeout-minutes: 20
         shell: bash
         run: |

@@ -26,6 +26,10 @@ on:
       force-build:
         required: false
         type: boolean
+      fork-test-release: # [fork] passed down to build_orca.yml
+        required: false # [fork]
+        type: boolean # [fork]
+        default: false # [fork]
 
 jobs:
   build_deps:
@@ -189,4 +193,5 @@ jobs:
       os: ${{ inputs.os }}
       arch: ${{ inputs.arch }}
       compiler: ${{ inputs.compiler }}
+      fork-test-release: ${{ inputs.fork-test-release }} # [fork]
     secrets: inherit
