@@ -147,7 +147,7 @@
 #include <boost/log/sources/severity_logger.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/nowide/convert.hpp>
-#include <boost/nowide/cenv.hpp> // [fork] WEBVIEW2_USER_DATA_FOLDER
+#include <boost/nowide/cstdlib.hpp> // [fork] setenv(WEBVIEW2_USER_DATA_FOLDER)
 #include <boost/nowide/cstdio.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
