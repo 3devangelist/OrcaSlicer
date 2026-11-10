@@ -147,6 +147,7 @@
 #include <boost/log/sources/severity_logger.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/nowide/convert.hpp>
+#include <boost/nowide/cenv.hpp> // [fork] WEBVIEW2_USER_DATA_FOLDER
 #include <boost/nowide/cstdio.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -2797,6 +2798,15 @@ void GUI_App::init_app_config()
     } else {
         m_datadir_redefined = true;
     }
+
+#ifdef _WIN32
+    // [fork] A data folder of its own (portable data_dir, or --datadir) gets its own WebView2 profile too.
+    // WebView2 keeps one profile per user by default: while an installed OrcaSlicer holds it, a second one
+    // running from another data folder shows its web pages (setup wizard, Home) blank. A value the user
+    // set wins (no replace).
+    if (boost::filesystem::path(data_dir()) != boost::filesystem::path(wxStandardPaths::Get().GetUserDataDir().ToUTF8().data()))
+        boost::nowide::setenv("WEBVIEW2_USER_DATA_FOLDER", (boost::filesystem::path(data_dir()) / "EBWebView").string().c_str(), false);
+#endif
 
     // start log here
     std::time_t       t        = std::time(0);
