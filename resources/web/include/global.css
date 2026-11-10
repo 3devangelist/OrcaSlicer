@@ -16,9 +16,9 @@
 	{"#EEEEEE", "#4C4C55"} sidebar
 	{"#FEFFFF", "#242428"} bg color-
 	*/
-	--main-color			: #009688;
-	--main-color-hover		: #26A69A;
-	--main-color-fixed		: #009688;
+	--main-color			: #FF6D00;
+	--main-color-hover		: #FF6D00;
+	--main-color-fixed		: #FF6D00;
 	--bg-color				: #FFFFFF;
 	--bg-color-secondary	: #F4F4F4;
 	--bg-color-alt			: #F0F0F0;
@@ -26,8 +26,8 @@
 	--fg-color-text			: #262E30;
 	--fg-color-label		: #363636;
 	--fg-color-disabled		: #ACACAC;
-	--focus-bg-item			: #BFE1DE; /*ORCA color with %10 opacity. Used for focused item background like combobox, text input*/
-	--focus-bg-box			: #E5F0EE; /*ORCA color with %25 opacity. Used for checked / active item background*/
+	--focus-bg-item			: #FFD0AD; /*ORCA color with %10 opacity. Used for focused item background like combobox, text input*/
+	--focus-bg-box			: #FFE9D9; /*ORCA color with %25 opacity. Used for checked / active item background*/
 	--border-color			: #DBDBDB;
 	--icon-color			: #7C8282;
 	--button-fg-light		: #FEFEFE;
@@ -48,9 +48,9 @@
   
 @media (prefers-color-scheme: dark) { 
 :root {
-	--main-color			: #00675B;
-	--main-color-hover		: #008172;
-	--main-color-fixed		: #009688;
+	--main-color			: #FF6D00;
+	--main-color-hover		: #FF6D00;
+	--main-color-fixed		: #FF6D00;
 	--bg-color				: #2D2D31;
 	--bg-color-secondary	: #36363B;
 	--bg-color-alt			: #242428;

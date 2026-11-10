@@ -304,7 +304,7 @@ private:
         dc.SetBackground(wxBrush(GetParent() ? GetParent()->GetBackgroundColour() : *wxWHITE));
         dc.Clear();
  
-        wxColour textCol = StateColor::darkModeColorFor(m_hovered ? "#26A69A" : "#363636");
+        wxColour textCol = StateColor::darkModeColorFor(m_hovered ? "#FF6D00" : "#363636");
  
         dc.SetTextForeground(textCol);
         dc.SetFont(m_font);
@@ -1541,7 +1541,7 @@ void PreferencesDialog::update_mcp_status(const std::string &note)
     else
         m_mcp_status_timer.Stop();
 
-    const wxColour dot = serving                       ? wxColour("#26A69A") :
+    const wxColour dot = serving                       ? wxColour("#FF6D00") :
                          held                          ? wxColour("#6B6B6B") :
                          !shown_note.empty() || enabled ? wxColour("#FF6F00") :
                                                           wxColour("#6B6B6B");

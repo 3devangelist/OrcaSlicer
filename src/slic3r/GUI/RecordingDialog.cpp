@@ -85,7 +85,7 @@ private:
         const std::unique_ptr<wxGraphicsContext> gc(wxGraphicsContext::Create(dc));
         if (!gc)
             return;
-        const wxColour teal("#009688");
+        const wxColour teal("#FF6D00");
         const wxColour grey = StateColor::darkModeColorFor(wxColour("#B4B4B4"));
         const wxSize   size = GetClientSize();
         const double   x = size.x / 2., y = FromDIP(11), r = FromDIP(6);

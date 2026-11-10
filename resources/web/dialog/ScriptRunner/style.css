@@ -7,7 +7,7 @@
   --sr-fg: var(--orca-fg, #262e30);
   --sr-muted: var(--orca-muted, #6b7478);
   --sr-rule: var(--border, #dcdfe1);
-  --sr-accent: var(--orca-accent, #009688);
+  --sr-accent: var(--orca-accent, #FF6D00);
   --sr-accent-fg: var(--orca-accent-fg, #ffffff);
   --sr-pass: var(--plugin-status-ok, #137333);
   --sr-fail: var(--plugin-status-danger, #b42318);
@@ -19,9 +19,9 @@
   --sr-btn-bg: var(--btn-bg, #ffffff);
   --sr-btn-border: var(--btn-border, #cccccc);
   --sr-btn-hover: var(--btn-hover, #f0f0f0);
-  --sr-accent-tint: var(--plugin-source-mine-bg, rgba(0, 150, 136, 0.12));
-  --sr-ring: rgba(0, 150, 136, 0.25);
-  --sr-ring-soft: rgba(0, 150, 136, 0.1);
+  --sr-accent-tint: var(--plugin-source-mine-bg, rgba(255, 109, 0, 0.12));
+  --sr-ring: rgba(255, 109, 0, 0.25);
+  --sr-ring-soft: rgba(255, 109, 0, 0.1);
   --sr-mono: "Cascadia Code", Consolas, "SF Mono", Menlo, "DejaVu Sans Mono", monospace;
   --sr-dot: 20px;
   /* The editor's syntax colours, set apart from the status colours so a string never reads as a warning. */
@@ -34,17 +34,17 @@
   --sr-pop-bg: var(--ctx-bg, #ffffff);
   --sr-pop-border: var(--ctx-border, #cccccc);
   --sr-pop-shadow: 0 6px 20px rgba(20, 30, 35, 0.16);
-  --sr-selection: rgba(0, 150, 136, 0.22);
+  --sr-selection: rgba(255, 109, 0, 0.22);
 }
 :root[data-orca-theme="dark"] {
-  --sr-syn-key: #4db6ac;
+  --sr-syn-key: #ff6d00;
   --sr-syn-string: #d9a35f;
   --sr-syn-number: #b79af0;
   --sr-syn-punct: #7f858b;
   --sr-syn-comment: #858a90;
   --sr-gutter: #28282c;
   --sr-pop-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
-  --sr-selection: rgba(0, 150, 136, 0.35);
+  --sr-selection: rgba(255, 109, 0, 0.35);
 }
 
 * { box-sizing: border-box; }
