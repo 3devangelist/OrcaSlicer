@@ -1,0 +1,161 @@
+# [fork] Fork-only workflow (3devangelist/OrcaSlicer). Not part of upstream.
+#
+# Builds a test version for Windows x64 (portable zip only) and Linux x86_64
+# (AppImage only) and publishes them as a pre-release of THIS repository.
+# No macOS, no ARM, no Flatpak, no unit test jobs, no profile checks, no NSIS
+# installer, no MSIX, no code signing, no nightly deploy.
+#
+# The ref that is built is the one picked in "Use workflow from" (the
+# --ref of `gh workflow run`): the reusable build workflows check out the
+# triggering ref, so a separate ref input would not reach them.
+#
+#   gh workflow run fork_test_release.yml --repo 3devangelist/OrcaSlicer \
+#     --ref teste/mcp -f tag=test-20261110
+#
+# Release notes come from fork/RELEASE_NOTES_TEST.md on the built ref.
+
+name: Fork test release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag of the new pre-release, e.g. test-20261110 (empty: test-YYYYMMDD of today)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-test-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Fails in seconds, before hours of building, when the tag is invalid or
+  # already has a release.
+  check:
+    name: Check tag
+    # Never runs in the upstream repository, even if this file ever got there.
+    if: ${{ github.repository != 'OrcaSlicer/OrcaSlicer' }}
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Resolve and check the tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_INPUT: ${{ inputs.tag }}
+        run: |
+          tag="${TAG_INPUT:-test-$(date -u +%Y%m%d)}"
+          if ! git check-ref-format "refs/tags/$tag" || [[ "$tag" =~ [[:space:]] ]]; then
+            echo "::error::'$tag' is not a valid tag name."
+            exit 1
+          fi
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::A release '$tag' already exists in $GITHUB_REPOSITORY. Pick another tag."
+            exit 1
+          fi
+          echo "Building $GITHUB_REF_NAME ($GITHUB_SHA) for pre-release '$tag' in $GITHUB_REPOSITORY"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  # Same call as build_all.yml's hosted Linux amd64 leg (empty arch keeps the
+  # 'linux-clang' deps cache key). Deps are built on a cache miss and cached
+  # in this repository for the next run.
+  build_linux:
+    name: Build Linux x86_64
+    needs: check
+    permissions:
+      contents: read
+      actions: write # lets build_orca.yml drop its older compiler cache entries
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: ubuntu-24.04
+      arch: ''
+      build-deps-only: false
+      force-build: false
+      fork-test-release: true
+
+  # Same call as build_all.yml's hosted Windows x64 leg (clang-cl + Ninja).
+  build_windows:
+    name: Build Windows x64
+    needs: check
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/build_check_cache.yml
+    with:
+      os: windows-latest
+      arch: x64
+      compiler: clang
+      build-deps-only: false
+      force-build: false
+      fork-test-release: true
+
+  release:
+    name: Create pre-release
+    needs: [check, build_linux, build_windows]
+    if: ${{ !cancelled() && success() && github.repository != 'OrcaSlicer/OrcaSlicer' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      - name: Checkout the release notes
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: fork/RELEASE_NOTES_TEST.md
+          sparse-checkout-cone-mode: false
+
+      # build_orca.yml uploads the folder that upstream zips into the portable
+      # zip (build/OrcaSlicer), not the zip itself.
+      - name: Download the Windows portable folder
+        uses: actions/download-artifact@v8
+        with:
+          pattern: OrcaSlicer_Windows_*_x64_portable
+          merge-multiple: true
+          path: stage/OrcaSlicer
+
+      - name: Download the Linux AppImage
+        uses: actions/download-artifact@v8
+        with:
+          pattern: OrcaSlicer_Linux_ubuntu_2404_V*
+          merge-multiple: true
+          path: stage/linux
+
+      # Same layout as upstream's portable zip (a top-level OrcaSlicer folder),
+      # plus an empty data_dir next to orca-slicer.exe: GUI_App::init_app_config
+      # then keeps settings there instead of %APPDATA%\OrcaSlicer, so this build
+      # never touches an installed OrcaSlicer. Upstream's zip has no data_dir.
+      - name: Pack the Windows portable zip
+        run: |
+          test -f stage/OrcaSlicer/orca-slicer.exe || { echo "::error::orca-slicer.exe missing from the Windows artifact"; exit 1; }
+          mkdir -p stage/OrcaSlicer/data_dir
+          (cd stage && zip -r -9 -q "../OrcaSlicer_fork_${TAG}_Windows_x64_portable.zip" OrcaSlicer)
+          unzip -l "OrcaSlicer_fork_${TAG}_Windows_x64_portable.zip" | grep -q ' OrcaSlicer/data_dir/$'
+
+      - name: Rename the AppImage
+        run: |
+          appimage=$(find stage/linux -maxdepth 1 -name 'OrcaSlicer_Linux_AppImage*.AppImage' | head -1)
+          test -n "$appimage" || { echo "::error::AppImage missing from the Linux artifact"; exit 1; }
+          mv "$appimage" "OrcaSlicer_fork_${TAG}_Linux_x86_64.AppImage"
+          chmod +x "OrcaSlicer_fork_${TAG}_Linux_x86_64.AppImage"
+
+      - name: Create the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp fork/RELEASE_NOTES_TEST.md notes.md
+          printf '\n---\n\nBuilt from `%s` at commit %s.\n' "$GITHUB_REF_NAME" "$GITHUB_SHA" >> notes.md
+          # --repo is this fork; --target pins the tag to the commit that was built.
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Test build $TAG (fork, not official OrcaSlicer)" \
+            --notes-file notes.md \
+            "OrcaSlicer_fork_${TAG}_Windows_x64_portable.zip" \
+            "OrcaSlicer_fork_${TAG}_Linux_x86_64.AppImage"
