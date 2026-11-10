@@ -7,6 +7,7 @@
 
 #include "libslic3r/BoundingBox.hpp"
 #include "libslic3r/BuildVolume.hpp"
+#include "libslic3r/ClipperUtils.hpp" // make_counter_clockwise
 #include "libslic3r/Geometry.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PrintConfig.hpp"
