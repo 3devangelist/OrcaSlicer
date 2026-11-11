@@ -56,6 +56,7 @@ struct Registry
     bool                                       has_project_set = false;
     const PartPlate*                           active          = nullptr; // nullptr: the project's set
     bool                                       swapping        = false;
+    const PartPlate*                           adding_from     = nullptr; // see AddingPlate
 };
 
 Registry& registry()
@@ -429,6 +430,9 @@ const DynamicPrintConfig& plate_printer_config(const PartPlate* plate, std::stri
     const Registry&     r      = registry();
     const PresetBundle& bundle = *wxGetApp().preset_bundle;
     const auto          it     = plate != nullptr ? r.plate_sets.find(plate) : r.plate_sets.end();
+    // A plate being added has no set yet: it is laid out as the plate it copies (AddingPlate).
+    if (plate != nullptr && it == r.plate_sets.end() && r.adding_from != nullptr && r.adding_from != plate)
+        return plate_printer_config(r.adding_from, preset_name);
     const PresetSnapshot* set  = nullptr;
     if (plate != nullptr && r.active != plate) {
         if (it != r.plate_sets.end())
@@ -503,6 +507,8 @@ MachineBinding plate_machine(const PartPlate* plate)
     const Registry& r = registry();
     if (plate == nullptr)
         plate = r.active; // a plate added from the current one gets its machine
+    else if (r.adding_from != nullptr && r.adding_from != plate && r.plate_sets.find(plate) == r.plate_sets.end())
+        plate = r.adding_from; // a plate being added (AddingPlate)
     const auto it = r.plate_sets.find(plate);
     return it != r.plate_sets.end() ? it->second.machine : MachineBinding{};
 }
@@ -715,6 +721,9 @@ void on_plate_added(Plater& plater, PartPlate* source, PartPlate* added)
             r.active = added;
     }
 }
+
+AddingPlate::AddingPlate(const PartPlate* source) { registry().adding_from = source; }
+AddingPlate::~AddingPlate() { registry().adding_from = nullptr; }
 
 void copy_plate_settings(Plater& plater, PartPlate* plate)
 {

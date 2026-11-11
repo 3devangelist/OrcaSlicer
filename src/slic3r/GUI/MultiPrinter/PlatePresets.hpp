@@ -135,6 +135,19 @@ void append_plate_presets_menu_item(wxMenu* menu, size_t pos, wxWindow* parent);
 // overrides, and its own preset set if it has one. Called before the new plate is selected.
 void on_plate_added(Plater& plater, PartPlate* source, PartPlate* added);
 
+// While it lives, a plate being created (it has no set yet) counts as a copy of `source`: the plate layout
+// gives it the source's printer and machine. Without this, the plate added when upstream's grid gets
+// another column (5th, 10th...) was laid out with the project's printer while all plates moved, and kept
+// that row and bed size after on_plate_added gave it the source's set.
+class AddingPlate
+{
+public:
+    explicit AddingPlate(const PartPlate* source);
+    ~AddingPlate();
+    AddingPlate(const AddingPlate&)            = delete;
+    AddingPlate& operator=(const AddingPlate&) = delete;
+};
+
 // Copy / paste everything a plate has: plate options and process overrides, and which printer,
 // process and filaments it uses (its own set, or the project's).
 void copy_plate_settings(Plater& plater, PartPlate* plate);
