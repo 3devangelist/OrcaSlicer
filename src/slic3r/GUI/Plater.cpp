@@ -24181,6 +24181,7 @@ int Plater::add_plate()
         return -1;
     take_snapshot("add partplate");
     PartPlate* source_plate = p->partplate_list.get_curr_plate(); // [multi-printer]
+    MultiPrinterGui::AddingPlate adding(source_plate); // [multi-printer] lay the new plate out as its source
     int new_plate = p->partplate_list.create_plate();
     if (new_plate < 0)
         return new_plate;
